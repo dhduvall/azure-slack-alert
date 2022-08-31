@@ -1,0 +1,8 @@
+[package]
+name = "handler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }
+axum = "0.5.15"
