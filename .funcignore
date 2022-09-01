@@ -1,1 +1,6 @@
+.azure
+*.swp
+**/*.swp
 target
+# This ends up also not excluding handler.d.
+!target/x86_64-unknown-linux-musl/release/handler
