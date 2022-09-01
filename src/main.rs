@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::env;
 use std::net::{Ipv4Addr, SocketAddr};
 
+pub mod alerts;
+
 #[tokio::main]
 async fn main() {
     let app = Router::new().route("/api/ServiceHealthAlert", get(do_get).post(do_post));
