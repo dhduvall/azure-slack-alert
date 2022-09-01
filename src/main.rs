@@ -43,29 +43,26 @@ async fn do_get(params: Option<Query<HashMap<String, String>>>) -> String {
 async fn do_post(v: Result<Json<alerts::ActivityLog>, JsonRejection>) -> impl IntoResponse {
     match v {
         Ok(v) => match &v.data.context.activity_log {
-            alerts::InnerActivityLog::ServiceHealth(_) => {
-                (StatusCode::OK, String::from("Got Service Health"))
+            alerts::InnerActivityLog::ServiceHealth(ev) => {
+                handle_service_health(ev).await.into_response()
             }
-            alerts::InnerActivityLog::SecurityLog(_) => (
-                StatusCode::BAD_REQUEST,
-                format!("Unexpected SecurityLog event"),
-            ),
-            alerts::InnerActivityLog::Recommendation(_) => (
-                StatusCode::BAD_REQUEST,
-                format!("Unexpected Recommendation event"),
-            ),
-            alerts::InnerActivityLog::ResourceHealth(_) => (
-                StatusCode::BAD_REQUEST,
-                format!("Unexpected ResourceHealth event"),
-            ),
-            alerts::InnerActivityLog::Administrative(_) => (
-                StatusCode::BAD_REQUEST,
-                format!("Unexpected Administrative event"),
-            ),
+            alerts::InnerActivityLog::SecurityLog(ev) => {
+                handle_security_log(ev).await.into_response()
+            }
+            alerts::InnerActivityLog::Recommendation(ev) => {
+                handle_recommendation(ev).await.into_response()
+            }
+            alerts::InnerActivityLog::ResourceHealth(ev) => {
+                handle_resource_health(ev).await.into_response()
+            }
+            alerts::InnerActivityLog::Administrative(ev) => {
+                handle_administrative(ev).await.into_response()
+            }
             alerts::InnerActivityLog::Dummy => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Dummy event should neverhappen!"),
-            ),
+            )
+                .into_response(),
         },
         Err(JsonRejection::MissingJsonContentType(_)) => {
             // We'll come here if there's no data, too.  This is probably a documentation RFE, at
@@ -73,19 +70,52 @@ async fn do_post(v: Result<Json<alerts::ActivityLog>, JsonRejection>) -> impl In
             return (
                 StatusCode::BAD_REQUEST,
                 String::from("Missing JSON content type"),
-            );
+            )
+                .into_response();
         }
         Err(JsonRejection::JsonDataError(_)) => {
-            return (StatusCode::BAD_REQUEST, String::from("JSON data error"));
+            return (StatusCode::BAD_REQUEST, String::from("JSON data error")).into_response();
         }
         Err(JsonRejection::JsonSyntaxError(_)) => {
-            return (StatusCode::BAD_REQUEST, String::from("JSON syntax error"));
+            return (StatusCode::BAD_REQUEST, String::from("JSON syntax error")).into_response();
         }
         Err(JsonRejection::BytesRejection(_)) => {
-            return (StatusCode::BAD_REQUEST, String::from("Bytes Rejection"));
+            return (StatusCode::BAD_REQUEST, String::from("Bytes Rejection")).into_response();
         }
         Err(_) => {
-            return (StatusCode::BAD_REQUEST, String::from("Other error"));
+            return (StatusCode::BAD_REQUEST, String::from("Other error")).into_response();
         }
     }
+}
+
+async fn handle_service_health(_ev: &alerts::ServiceHealth) -> impl IntoResponse {
+    (StatusCode::OK, String::from("Got Service Health event"))
+}
+
+async fn handle_security_log(_ev: &alerts::SecurityLog) -> impl IntoResponse {
+    (
+        StatusCode::BAD_REQUEST,
+        String::from("Got unexpected Security Log event"),
+    )
+}
+
+async fn handle_recommendation(_ev: &alerts::Recommendation) -> impl IntoResponse {
+    (
+        StatusCode::BAD_REQUEST,
+        String::from("Got unexpected Recommendation event"),
+    )
+}
+
+async fn handle_resource_health(_ev: &alerts::ResourceHealth) -> impl IntoResponse {
+    (
+        StatusCode::BAD_REQUEST,
+        String::from("Got unexpected Resource Health event"),
+    )
+}
+
+async fn handle_administrative(_ev: &alerts::Administrative) -> impl IntoResponse {
+    (
+        StatusCode::BAD_REQUEST,
+        String::from("Got unexpected Administrative event"),
+    )
 }
