@@ -7,31 +7,31 @@ use uuid::Uuid;
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 #[allow(unused)]
-struct ActivityLog {
-    schema_id: String,
-    data: AlertData,
+pub struct ActivityLog {
+    pub schema_id: String,
+    pub data: AlertData,
 }
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 #[allow(unused)]
-struct AlertData {
-    status: String,
+pub struct AlertData {
+    pub status: String,
     #[serde(default)]
-    properties: HashMap<String, String>,
-    context: AlertContext,
+    pub properties: HashMap<String, String>,
+    pub context: AlertContext,
 }
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 #[allow(unused)]
-struct AlertContext {
-    activity_log: InnerActivityLog,
+pub struct AlertContext {
+    pub activity_log: InnerActivityLog,
 }
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(untagged)]
-enum InnerActivityLog {
+pub enum InnerActivityLog {
     #[default]
     Dummy,
     SecurityLog(SecurityLog),
@@ -46,45 +46,45 @@ enum InnerActivityLog {
 #[derive(Deserialize, Debug, Default)]
 #[serde(default, rename_all = "camelCase")]
 #[allow(unused)]
-struct ServiceHealth {
-    channels: String, // Enum?
-    correlation_id: Uuid,
-    description: String,
+pub struct ServiceHealth {
+    pub channels: String, // Enum?
+    pub correlation_id: Uuid,
+    pub description: String,
     #[serde(deserialize_with = "deserialize_event_source_service_health")]
-    event_source: String, // must be "ServiceHealth"
-    event_timestamp: DateTime<Utc>,
-    event_data_id: Uuid,
-    level: String, // Enum?
-    operation_name: String,
-    operation_id: Uuid,
+    pub event_source: String, // must be "ServiceHealth"
+    pub event_timestamp: DateTime<Utc>,
+    pub event_data_id: Uuid,
+    pub level: String, // Enum?
+    pub operation_name: String,
+    pub operation_id: Uuid,
     status: String, // Enum?
-    subscription_id: Uuid,
-    properties: ServiceHealthProperties,
+    pub subscription_id: Uuid,
+    pub properties: ServiceHealthProperties,
 }
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(default, rename_all = "camelCase")]
 #[allow(unused)]
-struct ServiceHealthProperties {
-    title: String,
-    service: String,
-    region: String,
-    communication: String,
-    incident_type: String, // Enum?
-    tracking_id: String,
-    impact_start_time: DateTime<Utc>,
-    impacted_services: String, // JSON
-    default_language_title: String,
-    default_language_content: String,
-    stage: String, // Enum?
-    communication_id: String,
-    version: String,
+pub struct ServiceHealthProperties {
+    pub title: String,
+    pub service: String,
+    pub region: String,
+    pub communication: String,
+    pub incident_type: String, // Enum?
+    pub tracking_id: String,
+    pub impact_start_time: DateTime<Utc>,
+    pub impacted_services: String, // JSON
+    pub default_language_title: String,
+    pub default_language_content: String,
+    pub stage: String, // Enum?
+    pub communication_id: String,
+    pub version: String,
 }
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(default, rename_all = "camelCase")]
 #[allow(unused)]
-struct Recommendation {
+pub struct Recommendation {
     #[serde(deserialize_with = "deserialize_event_source_recommendation")]
     event_source: String,
 }
@@ -92,7 +92,7 @@ struct Recommendation {
 #[derive(Deserialize, Debug, Default)]
 #[serde(default, rename_all = "camelCase")]
 #[allow(unused)]
-struct SecurityLog {
+pub struct SecurityLog {
     #[serde(deserialize_with = "deserialize_event_source_security_log")]
     event_source: String,
 }
@@ -100,7 +100,7 @@ struct SecurityLog {
 #[derive(Deserialize, Debug, Default)]
 #[serde(default, rename_all = "camelCase")]
 #[allow(unused)]
-struct ResourceHealth {
+pub struct ResourceHealth {
     #[serde(deserialize_with = "deserialize_event_source_resource_health")]
     event_source: String,
 }
@@ -108,7 +108,7 @@ struct ResourceHealth {
 #[derive(Deserialize, Debug, Default)]
 #[serde(default, rename_all = "camelCase")]
 #[allow(unused)]
-struct Administrative {
+pub struct Administrative {
     #[serde(deserialize_with = "deserialize_event_source_administrative")]
     event_source: String,
 }

@@ -5,7 +5,6 @@ use axum::{
     routing::get,
     Router,
 };
-use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -39,31 +38,35 @@ async fn do_get(params: Option<Query<HashMap<String, String>>>) -> String {
     }
 }
 
-// XXX Value is probably just a stand-in for now; will probably want to have real data structures
-// for the alerts.
 // All the return types must be the same.  If that's not appropriate, we can call .into_response():
 // https://docs.rs/axum/0.5.15/axum/response/index.html#returning-different-response-types
-async fn do_post(v: Result<Json<Value>, JsonRejection>) -> impl IntoResponse {
+async fn do_post(v: Result<Json<alerts::ActivityLog>, JsonRejection>) -> impl IntoResponse {
     match v {
-        Ok(v) => {
-            // yay!
-            if v["schemaId"] != "Microsoft.Insights/activityLogs" {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("Unexpected schemaId '{}'", v["schemaId"]),
-                );
+        Ok(v) => match &v.data.context.activity_log {
+            alerts::InnerActivityLog::ServiceHealth(_) => {
+                (StatusCode::OK, String::from("Got Service Health"))
             }
-
-            let event_source = &v["data"]["context"]["activityLog"]["eventSource"];
-            if event_source != "ServiceHealth" {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("Unexpected event '{}'", event_source),
-                );
-            }
-
-            return (StatusCode::OK, String::from("OKAY!"));
-        }
+            alerts::InnerActivityLog::SecurityLog(_) => (
+                StatusCode::BAD_REQUEST,
+                format!("Unexpected SecurityLog event"),
+            ),
+            alerts::InnerActivityLog::Recommendation(_) => (
+                StatusCode::BAD_REQUEST,
+                format!("Unexpected Recommendation event"),
+            ),
+            alerts::InnerActivityLog::ResourceHealth(_) => (
+                StatusCode::BAD_REQUEST,
+                format!("Unexpected ResourceHealth event"),
+            ),
+            alerts::InnerActivityLog::Administrative(_) => (
+                StatusCode::BAD_REQUEST,
+                format!("Unexpected Administrative event"),
+            ),
+            alerts::InnerActivityLog::Dummy => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Dummy event should neverhappen!"),
+            ),
+        },
         Err(JsonRejection::MissingJsonContentType(_)) => {
             // We'll come here if there's no data, too.  This is probably a documentation RFE, at
             // least.
