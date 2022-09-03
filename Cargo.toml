@@ -10,7 +10,14 @@ serde_json = "1.0.85"
 chrono = { version = "0.4.22", features = ["serde"] }
 uuid = { version = "1.1.2", features = ["serde"] }
 serde = { version = "1.0.144", features = ["derive"] }
+# azure_security_keyvault is the one forcing openssl when cross-compiling to x86_64-unknown-linux-musl.
+# https://github.com/Azure/azure-sdk-for-rust/issues/191
 azure_security_keyvault = "0.4.0"
+# azure_identity can be told to use rustls in its stack rather than openssl, but
+# rustls depends on ring, which failed the cross-compile, too.  So between that
+# and keyvault, since we have openssl cross-compiled on MacOS, we'll just use
+# the default features.
+# azure_identity = { version = "0.5.0", default-features = false, features = ["enable_reqwest_rustls"] }
 azure_identity = "0.5.0"
 tracing = "0.1.36"
 tracing-subscriber = "0.3.15"
