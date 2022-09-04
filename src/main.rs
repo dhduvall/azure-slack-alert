@@ -118,9 +118,10 @@ async fn handle_service_health(
         DefaultAzureCredential::default()
     };
 
-    // XXX vault name from env
+    let vault_name = env::var("KEYVAULT_NAME").unwrap_or("coros-svc-health-alert".to_string());
+
     let client = SecretClient::new(
-        "https://coros-svc-health-alert.vault.azure.net",
+        &format!("https://{vault_name}.vault.azure.net"),
         std::sync::Arc::new(creds),
     )
     .map_err(|e| {
@@ -131,14 +132,13 @@ async fn handle_service_health(
     })?;
     trace!("Created client; retrieving secret");
 
-    // XXX Get this from the environment or something.
-    let secret_name = "test-secret";
+    let secret_name = env::var("SLACK_API_KEY_NAME").unwrap_or("slack-bot-oauth-token".to_string());
     // It would be nice to make this map_err() call more compact, maybe by having a map_ise()
     // function.  But the map_err() argument is a function that takes a single Error argument, and
     // we'd need to be able to pass the string, too.  Can we do something like have map_ise()
     // return a function that does the right thing, and then put map_ise(msg) as the argument to
     // map_err()?
-    let secret = client.get(secret_name).into_future().await.map_err(|e| {
+    let secret = client.get(&secret_name).into_future().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             String::from(format!(
