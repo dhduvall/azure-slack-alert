@@ -22,3 +22,4 @@ azure_identity = "0.5.0"
 tracing = "0.1.36"
 tracing-subscriber = "0.3.15"
 uname = "0.1.1"
+slack-morphism = { version = "1.2.0", features = ["hyper"] }

@@ -7,10 +7,11 @@ use axum::{
 };
 use azure_identity::{AzureCliCredential, DefaultAzureCredential, DefaultAzureCredentialEnum};
 use azure_security_keyvault::SecretClient;
+use slack_morphism::prelude::*;
 use std::collections::HashMap;
 use std::env;
 use std::net::{Ipv4Addr, SocketAddr};
-use tracing::{instrument, trace};
+use tracing::{debug, instrument, trace};
 use tracing_subscriber;
 use uname::uname;
 
@@ -147,11 +148,27 @@ async fn handle_service_health(
         )
     })?;
 
+    let slack_client = SlackClient::new(SlackClientHyperConnector::new());
+    let slack_token_value: SlackApiTokenValue = secret.value.into();
+    let slack_token = SlackApiToken::new(slack_token_value);
+    let slack_session = slack_client.open_session(&slack_token);
+    let slack_auth_test = slack_session.auth_test().await.map_err(|e| {
+        // XXX Could run api_test() here to make sure basic connectivity is okay.
+        debug!("Slack auth test failure: {:#?}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            String::from(format!(
+                "Failed to perform an auth test connection to Slack: {:#?}",
+                e
+            )),
+        )
+    })?;
+
     Ok((
         StatusCode::OK,
         String::from(format!(
-            "Got Service Health event, secret '{secret_name}' is '{}'",
-            secret.value,
+            // Obviously, don't do this for realz
+            "Got Service Health event, secret '{secret_name}' is 'LOLZ J/K'.\nSlack auth test response: {slack_auth_test:?}"
         )),
     ))
 }
