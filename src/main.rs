@@ -43,8 +43,8 @@ async fn main() {
 async fn do_get(params: Option<Query<HashMap<String, String>>>) -> String {
     let Query(params) = params.unwrap_or_default();
     match params.get("name") {
-        Some(name) => format!("Hello, {}. This HTTP-triggered function executed successfully.", name),
-        None => String::from("This HTTP-triggered function executed successfully. Pass a name in the query string for a personalized response."),
+        Some(name) => format!("Hello, {name}. This HTTP-triggered function executed successfully."),
+        None => "This HTTP-triggered function executed successfully. Pass a name in the query string for a personalized response.".into(),
     }
 }
 
@@ -119,7 +119,7 @@ async fn handle_service_health(
         DefaultAzureCredential::default()
     };
 
-    let vault_name = env::var("KEYVAULT_NAME").unwrap_or("coros-svc-health-alert".to_string());
+    let vault_name = env::var("KEYVAULT_NAME").unwrap_or("coros-svc-health-alert".into());
 
     let client = SecretClient::new(
         &format!("https://{vault_name}.vault.azure.net"),
@@ -128,12 +128,12 @@ async fn handle_service_health(
     .map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            String::from(format!("Failed to initialize Key Vault client: {e}")),
+            format!("Failed to initialize Key Vault client: {e}"),
         )
     })?;
     trace!("Created client; retrieving secret");
 
-    let secret_name = env::var("SLACK_API_KEY_NAME").unwrap_or("slack-bot-oauth-token".to_string());
+    let secret_name = env::var("SLACK_API_KEY_NAME").unwrap_or("slack-bot-oauth-token".into());
     // It would be nice to make this map_err() call more compact, maybe by having a map_ise()
     // function.  But the map_err() argument is a function that takes a single Error argument, and
     // we'd need to be able to pass the string, too.  Can we do something like have map_ise()
@@ -142,9 +142,7 @@ async fn handle_service_health(
     let secret = client.get(&secret_name).into_future().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            String::from(format!(
-                "Failed to retrieve secret '{secret_name}' from Key Vault: {e}"
-            )),
+            format!("Failed to retrieve secret '{secret_name}' from Key Vault: {e}"),
         )
     })?;
 
@@ -154,22 +152,39 @@ async fn handle_service_health(
     let slack_session = slack_client.open_session(&slack_token);
     let slack_auth_test = slack_session.auth_test().await.map_err(|e| {
         // XXX Could run api_test() here to make sure basic connectivity is okay.
-        debug!("Slack auth test failure: {:#?}", e);
+        debug!("Slack auth test failure: {e:#?}");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            String::from(format!(
-                "Failed to perform an auth test connection to Slack: {:#?}",
-                e
-            )),
+            format!("Failed to perform an auth test connection to Slack: {e:#?}"),
+        )
+    })?;
+
+    // XXX Maybe this should come from a query parameter?
+    let user_id = env::var("SLACK_TARGET_USER").map_err(|_| {
+        debug!("Couldn't find target user in environment variable SLACK_TARGET_USER");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Service configured incorrectly"),
+        )
+    })?;
+    let content = SlackMessageContent::new().with_text("Howdy, partner!".into());
+    let req = SlackApiChatPostMessageRequest::new(user_id.into(), content);
+    let resp = slack_session.chat_post_message(&req).await.map_err(|e| {
+        debug!("Slack message post failure: {e:#?}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to post message: {e:#?}"),
         )
     })?;
 
     Ok((
         StatusCode::OK,
-        String::from(format!(
+        format!(
             // Obviously, don't do this for realz
-            "Got Service Health event, secret '{secret_name}' is 'LOLZ J/K'.\nSlack auth test response: {slack_auth_test:?}"
-        )),
+            "Got Service Health event, secret '{secret_name}' is 'LOLZ J/K'.\n\
+             Slack auth test response: {slack_auth_test:?}\n\
+             Slack post message response: {resp:?}\n"
+        ),
     ))
 }
 
