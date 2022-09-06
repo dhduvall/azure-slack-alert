@@ -5,6 +5,7 @@ use axum::{
     routing::get,
     Router,
 };
+use axum_macros::debug_handler;
 use azure_identity::{AzureCliCredential, DefaultAzureCredential, DefaultAzureCredentialEnum};
 use azure_security_keyvault::SecretClient;
 use slack_morphism::prelude::*;
@@ -16,6 +17,7 @@ use tracing_subscriber;
 use uname::uname;
 
 pub mod alerts;
+pub mod html;
 
 #[tokio::main]
 #[instrument]
@@ -51,6 +53,7 @@ async fn do_get(params: Option<Query<HashMap<String, String>>>) -> String {
 // All the return types must be the same.  If that's not appropriate, we can call .into_response():
 // https://docs.rs/axum/0.5.15/axum/response/index.html#returning-different-response-types
 #[instrument(skip(v))]
+#[debug_handler]
 async fn do_post(v: Result<Json<alerts::ActivityLog>, JsonRejection>) -> impl IntoResponse {
     match v {
         Ok(v) => match &v.data.context.activity_log {
@@ -99,10 +102,20 @@ async fn do_post(v: Result<Json<alerts::ActivityLog>, JsonRejection>) -> impl In
     }
 }
 
-#[instrument(skip(_ev))]
+#[instrument(skip(ev))]
+// #[debug_handler]
 async fn handle_service_health(
-    _ev: &alerts::ServiceHealth,
+    ev: &alerts::ServiceHealth,
 ) -> axum::response::Result<(StatusCode, String)> {
+    // XXX We should continue if we couldn't parse the text as HTML; we just put the text straight
+    // into the message.  But for now, just error out.
+    let msg = html::build_message(ev).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to parse communication as HTML: {e}"),
+        )
+    })?;
+
     // On MacOS, a connection to 169.254.169.254 (which happens for the managed identity
     // credential) doesn't always return.  A simple curl to that will hang, too, the first time,
     // and then every connection after that will give "Host is down" until it seems to reset
@@ -167,7 +180,7 @@ async fn handle_service_health(
             format!("Service configured incorrectly"),
         )
     })?;
-    let content = SlackMessageContent::new().with_text("Howdy, partner!".into());
+    let content = SlackMessageContent::new().with_text(msg);
     let req = SlackApiChatPostMessageRequest::new(user_id.into(), content);
     let resp = slack_session.chat_post_message(&req).await.map_err(|e| {
         debug!("Slack message post failure: {e:#?}");
@@ -183,7 +196,7 @@ async fn handle_service_health(
             // Obviously, don't do this for realz
             "Got Service Health event, secret '{secret_name}' is 'LOLZ J/K'.\n\
              Slack auth test response: {slack_auth_test:?}\n\
-             Slack post message response: {resp:?}\n"
+             Slack post message response: {resp:#?}\n"
         ),
     ))
 }

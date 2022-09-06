@@ -23,3 +23,7 @@ tracing = "0.1.36"
 tracing-subscriber = "0.3.15"
 uname = "0.1.1"
 slack-morphism = { version = "1.2.0", features = ["hyper"] }
+axum-macros = "0.2.3"
+html_parser = "0.6.3"
+anyhow = "1.0.64"
+html-escape = "0.2.11"
