@@ -136,7 +136,7 @@ fn handle_ul(state: &mut State, element: &Element) {
 }
 
 fn handle_li(state: &mut State, element: &Element) {
-    let parent = state.element_chain.get(state.element_chain.len() - 2);
+    let parent = state.element_chain.iter().rev().nth(2);
     // We can't do proper lists unless we use the block kit; while "*" and "1." convert to bullets
     // and increasing numbers when typing into the app, they don't have that behavior here.  So we
     // use an explicit bullet (0x2022) for unordered lists.  We'd have to keep track of previous
