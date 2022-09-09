@@ -59,13 +59,19 @@ async fn do_get(params: Option<Query<HashMap<String, String>>>) -> String {
 async fn do_post(v: Result<Json<alerts::ActivityLog>, JsonRejection>) -> impl IntoResponse {
     match v {
         Ok(v) => {
-            save_doc(&v)
-                .await
-                .map_err(|e| {
-                    // XXX This doesn't do what I want it to do, so we do die on the unwrap
-                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-                })
-                .unwrap();
+            if let Err(e) = save_doc(&v).await {
+                // Log the error (the full chain using the alternate selector), but it doesn't
+                // impact the primary duty of this program, which is to post the activity log to
+                // Slack.
+                // XXX Maybe put some of the non-fatal errors we run into along the way into the
+                // Slack message?  Maybe in a separate admin conversation?
+                // XXX It'd be nice if anyhow::Error would serialize into JSON.  There's
+                // https://github.com/dtolnay/anyhow/issues/67 which was closed due to
+                // non-responsiveness.
+                error!("Failed to persist activity log: {e:#}");
+                // Display a multi-line version with all the struct members.
+                debug!("Failed to persist activity log: {e:#?}");
+            }
 
             match &v.data.context.activity_log {
                 alerts::InnerActivityLog::ServiceHealth(ev) => {
@@ -182,16 +188,17 @@ async fn handle_service_health(
 
 #[instrument(skip(doc))]
 async fn save_doc(Json(doc): &Json<alerts::ActivityLog>) -> Result<InsertOneResult, anyhow::Error> {
-    let key_name = env::var("COSMOS_CONNECTION_STRING")
+    let key_name = env::var("COSMOS_CONNECTION_STRING_KEY")
         .unwrap_or("cosmos-mongodb-primary-connection-string".into());
     let connection_string = keyvault_get_secret(&key_name)
         .await
-        .context("Failed to get CosmosDB connection string from Key Vault")?;
+        .context("failed to get CosmosDB connection string from Key Vault")?;
 
     let client_options = ClientOptions::parse(&connection_string).await?;
 
     let client = Client::with_options(client_options)?;
 
+    // The database will get created if it doesn't exist.  Can this behavior be changed?
     let database_name = env::var("COSMOS_DB_NAME").unwrap_or("service-health-alerts".into());
     let collection_name = env::var("COSMOS_COLLECTION_NAME").unwrap_or("alerts".into());
 
@@ -202,13 +209,9 @@ async fn save_doc(Json(doc): &Json<alerts::ActivityLog>) -> Result<InsertOneResu
         .insert_one(doc, None)
         .await
         .context("Failed to insert activity log into DB")
-        .map_err(|e| {
-            error!("{e}");
-            e
-        })
         .map(|x| {
             match x.inserted_id.as_object_id() {
-                Some(id) => debug!("Persisted activity log as document id {id}"),
+                Some(id) => debug!("Persisted activity log in {database_name}/{collection_name} as document id {id}"),
                 None => {
                     warn!("Activity log insertion succeeded, but failed to return object ID: {x:?}")
                 }
@@ -272,14 +275,14 @@ async fn keyvault_get_secret(secret_name: &str) -> Result<String, anyhow::Error>
         &format!("https://{vault_name}.vault.azure.net"),
         std::sync::Arc::new(creds),
     )
-    .with_context(|| format!("Failed to initialize Key Vault client"))?;
+    .with_context(|| format!("failed to initialize Key Vault client"))?;
     trace!("Created client; retrieving secret");
 
     client
         .get(secret_name)
         .into_future()
         .await
-        .with_context(|| format!("Failed to retrieve secret '{secret_name}' from Key Vault"))
+        .with_context(|| format!("failed to retrieve secret '{secret_name}' from Key Vault"))
         .and_then(|secret| Ok(secret.value))
 }
 
