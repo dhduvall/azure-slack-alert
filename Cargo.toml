@@ -20,7 +20,7 @@ azure_security_keyvault = "0.4.0"
 # azure_identity = { version = "0.5.0", default-features = false, features = ["enable_reqwest_rustls"] }
 azure_identity = "0.5.0"
 tracing = "0.1.36"
-tracing-subscriber = "0.3.15"
+tracing-subscriber = { version = "0.3.15", features = ["json"] }
 uname = "0.1.1"
 slack-morphism = { version = "1.2.0", features = ["hyper"] }
 axum-macros = "0.2.3"
@@ -28,3 +28,5 @@ html_parser = "0.6.3"
 anyhow = "1.0.64"
 html-escape = "0.2.11"
 mongodb = { version = "2.3.0", features = ["zlib-compression"] }
+atty = "0.2.14"
+tracing-core = "0.1.29"

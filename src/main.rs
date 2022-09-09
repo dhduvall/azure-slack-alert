@@ -49,10 +49,49 @@ fn env_default(var: EnvDefaults) -> String {
     }
 }
 
+fn init_logger() {
+    if atty::is(atty::Stream::Stdin) {
+        tracing_subscriber::fmt::init();
+    } else {
+        // This duplicates the code in tracing_subscriber::fmt::try_init().  See
+        // https://github.com/tokio-rs/tracing/issues/1329 and
+        // https://github.com/tokio-rs/tracing/issues/2217
+        use tracing_core::metadata::LevelFilter;
+        use tracing_subscriber::{fmt::Subscriber, util::SubscriberInitExt};
+        let builder = Subscriber::builder()
+            .with_max_level(LevelFilter::TRACE)
+            .json();
+
+        let subscriber = builder.finish();
+        let subscriber = {
+            use std::str::FromStr;
+            use tracing_subscriber::{filter::Targets, layer::SubscriberExt};
+
+            let targets = match env::var("RUST_LOG") {
+                Ok(var) => Targets::from_str(&var)
+                    .map_err(|e| {
+                        eprintln!("Ignoring `RUST_LOG={:?}`: {}", var, e);
+                    })
+                    .unwrap_or_default(),
+                Err(env::VarError::NotPresent) => {
+                    Targets::new().with_default(Subscriber::DEFAULT_MAX_LEVEL)
+                }
+                Err(e) => {
+                    eprintln!("Ignoring `RUST_LOG`: {}", e);
+                    Targets::new().with_default(Subscriber::DEFAULT_MAX_LEVEL)
+                }
+            };
+            subscriber.with(targets)
+        };
+
+        subscriber.init();
+    }
+}
+
 #[tokio::main]
 #[instrument]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    init_logger();
 
     let app = Router::new().route("/api/ServiceHealthAlert", get(do_get).post(do_post));
 
