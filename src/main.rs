@@ -15,7 +15,6 @@ use std::collections::HashMap;
 use std::env;
 use std::net::{Ipv4Addr, SocketAddr};
 use tracing::{debug, error, instrument, trace, warn};
-use tracing_subscriber;
 use uname::uname;
 
 pub mod alerts;
@@ -91,7 +90,7 @@ async fn do_post(v: Result<Json<alerts::ActivityLog>, JsonRejection>) -> impl In
                 }
                 alerts::InnerActivityLog::Dummy => (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Dummy event should never happen!"),
+                    "Dummy event should never happen!".to_string(),
                 )
                     .into_response(),
             }
@@ -99,24 +98,22 @@ async fn do_post(v: Result<Json<alerts::ActivityLog>, JsonRejection>) -> impl In
         Err(JsonRejection::MissingJsonContentType(_)) => {
             // We'll come here if there's no data, too.  This is probably a documentation RFE, at
             // least.
-            return (
+            (
                 StatusCode::BAD_REQUEST,
                 String::from("Missing JSON content type"),
             )
-                .into_response();
+                .into_response()
         }
         Err(JsonRejection::JsonDataError(_)) => {
-            return (StatusCode::BAD_REQUEST, String::from("JSON data error")).into_response();
+            (StatusCode::BAD_REQUEST, String::from("JSON data error")).into_response()
         }
         Err(JsonRejection::JsonSyntaxError(_)) => {
-            return (StatusCode::BAD_REQUEST, String::from("JSON syntax error")).into_response();
+            (StatusCode::BAD_REQUEST, String::from("JSON syntax error")).into_response()
         }
         Err(JsonRejection::BytesRejection(_)) => {
-            return (StatusCode::BAD_REQUEST, String::from("Bytes Rejection")).into_response();
+            (StatusCode::BAD_REQUEST, String::from("Bytes Rejection")).into_response()
         }
-        Err(_) => {
-            return (StatusCode::BAD_REQUEST, String::from("Other error")).into_response();
-        }
+        Err(_) => (StatusCode::BAD_REQUEST, String::from("Other error")).into_response(),
     }
 }
 
@@ -139,7 +136,8 @@ async fn handle_service_health(
         )
     })?;
 
-    let secret_name = env::var("SLACK_API_KEY_NAME").unwrap_or("slack-bot-oauth-token".into());
+    let secret_name =
+        env::var("SLACK_API_KEY_NAME").unwrap_or_else(|_| "slack-bot-oauth-token".into());
     let secret = keyvault_get_secret(&secret_name)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -162,7 +160,7 @@ async fn handle_service_health(
         debug!("Couldn't find target user in environment variable SLACK_TARGET_USER");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Service configured incorrectly"),
+            "Service configured incorrectly".to_string(),
         )
     })?;
     let content = SlackMessageContent::new().with_text(msg);
@@ -189,7 +187,7 @@ async fn handle_service_health(
 #[instrument(skip(doc))]
 async fn save_doc(Json(doc): &Json<alerts::ActivityLog>) -> Result<InsertOneResult, anyhow::Error> {
     let key_name = env::var("COSMOS_CONNECTION_STRING_KEY")
-        .unwrap_or("cosmos-mongodb-primary-connection-string".into());
+        .unwrap_or_else(|_| "cosmos-mongodb-primary-connection-string".into());
     let connection_string = keyvault_get_secret(&key_name)
         .await
         .context("failed to get CosmosDB connection string from Key Vault")?;
@@ -199,8 +197,9 @@ async fn save_doc(Json(doc): &Json<alerts::ActivityLog>) -> Result<InsertOneResu
     let client = Client::with_options(client_options)?;
 
     // The database will get created if it doesn't exist.  Can this behavior be changed?
-    let database_name = env::var("COSMOS_DB_NAME").unwrap_or("service-health-alerts".into());
-    let collection_name = env::var("COSMOS_COLLECTION_NAME").unwrap_or("alerts".into());
+    let database_name =
+        env::var("COSMOS_DB_NAME").unwrap_or_else(|_| "service-health-alerts".into());
+    let collection_name = env::var("COSMOS_COLLECTION_NAME").unwrap_or_else(|_| "alerts".into());
 
     let db = client.database(&database_name);
     let collection = db.collection::<alerts::ActivityLog>(&collection_name);
@@ -223,7 +222,7 @@ async fn save_doc(Json(doc): &Json<alerts::ActivityLog>) -> Result<InsertOneResu
 // I'd return the KeyVaultSecret, but the type is inaccessible.
 #[instrument]
 async fn keyvault_get_secret(secret_name: &str) -> Result<String, anyhow::Error> {
-    let vault_name = env::var("KEYVAULT_NAME").unwrap_or("coros-svc-health-alert".into());
+    let vault_name = env::var("KEYVAULT_NAME").unwrap_or_else(|_| "coros-svc-health-alert".into());
 
     trace!("Retrieving secret {secret_name} from Key Vault {vault_name}");
 
@@ -247,7 +246,7 @@ async fn keyvault_get_secret(secret_name: &str) -> Result<String, anyhow::Error>
         &format!("https://{vault_name}.vault.azure.net"),
         std::sync::Arc::new(creds),
     )
-    .with_context(|| format!("failed to initialize Key Vault client"))?;
+    .with_context(|| "failed to initialize Key Vault client".to_string())?;
     trace!("Created client; retrieving secret");
 
     client
@@ -255,7 +254,7 @@ async fn keyvault_get_secret(secret_name: &str) -> Result<String, anyhow::Error>
         .into_future()
         .await
         .with_context(|| format!("failed to retrieve secret '{secret_name}' from Key Vault"))
-        .and_then(|secret| Ok(secret.value))
+        .map(|secret| secret.value)
 }
 
 #[instrument(skip(_ev))]

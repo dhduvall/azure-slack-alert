@@ -57,7 +57,7 @@ fn handle_elements(state: &mut State, elements: &Vec<Node>) {
         match node {
             // XXX we actually need to convert <, >, and & back to HTML entities.
             Node::Text(text) => state.add_text(&decode_html_entities(&text)),
-            Node::Element(element) => handle_element(state, &element),
+            Node::Element(element) => handle_element(state, element),
             Node::Comment(_) => (),
         }
     }
@@ -71,12 +71,12 @@ fn handle_element(state: &mut State, element: &Element) {
 
     // XXX a macro could make this nicer
     match tag.as_str() {
-        "p" => handle_p(state, &element),
-        "b" | "strong" => handle_b(state, &element),
-        "i" | "em" | "u" => handle_i(state, &element),
-        "a" => handle_a(state, &element),
-        "ul" | "ol" => handle_ul(state, &element),
-        "li" => handle_li(state, &element),
+        "p" => handle_p(state, element),
+        "b" | "strong" => handle_b(state, element),
+        "i" | "em" | "u" => handle_i(state, element),
+        "a" => handle_a(state, element),
+        "ul" | "ol" => handle_ul(state, element),
+        "li" => handle_li(state, element),
         // For elements we don't recognize or care about (say, <span>), just ignore them and handle
         // their children.
         // XXX We could have a debugging version that emitted representations of the start and end
@@ -91,9 +91,8 @@ fn handle_element(state: &mut State, element: &Element) {
 fn get_all_text(element: &Element) -> String {
     let mut buf = String::new();
     for node in &element.children {
-        match node {
-            Node::Text(text) => buf.push_str(&decode_html_entities(&text)),
-            _ => (),
+        if let Node::Text(text) = node {
+            buf.push_str(&decode_html_entities(&text));
         }
     }
     buf
@@ -121,7 +120,7 @@ fn handle_i(state: &mut State, element: &Element) {
 }
 
 fn handle_a(state: &mut State, element: &Element) {
-    let link_text = get_all_text(&element);
+    let link_text = get_all_text(element);
     // Why are values in the attributes HashMap Option(String)?
     if let Some(Some(href)) = element.attributes.get("href") {
         state.add_text(&format!("<{href}|{link_text}>"));

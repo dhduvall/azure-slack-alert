@@ -29,6 +29,8 @@ pub struct AlertContext {
     pub activity_log: InnerActivityLog,
 }
 
+// ServiceHealth is only larger than the others because the others aren't implemented yet.
+#[allow(clippy::large_enum_variant)]
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(untagged)]
 pub enum InnerActivityLog {
