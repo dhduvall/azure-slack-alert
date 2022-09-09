@@ -27,3 +27,5 @@ axum-macros = "0.2.3"
 html_parser = "0.6.3"
 anyhow = "1.0.64"
 html-escape = "0.2.11"
+mongodb = { version = "2.3.0", features = ["zlib-compression"] }
+azure_core = "0.4.0"

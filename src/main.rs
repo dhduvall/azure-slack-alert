@@ -1,3 +1,4 @@
+use anyhow::Context;
 use axum::{
     extract::{rejection::JsonRejection, Json, Query},
     http::StatusCode,
@@ -8,11 +9,12 @@ use axum::{
 use axum_macros::debug_handler;
 use azure_identity::{AzureCliCredential, DefaultAzureCredential, DefaultAzureCredentialEnum};
 use azure_security_keyvault::SecretClient;
+use mongodb::{options::ClientOptions, results::InsertOneResult, Client};
 use slack_morphism::prelude::*;
 use std::collections::HashMap;
 use std::env;
 use std::net::{Ipv4Addr, SocketAddr};
-use tracing::{debug, instrument, trace};
+use tracing::{debug, error, instrument, trace, warn};
 use tracing_subscriber;
 use uname::uname;
 
@@ -56,28 +58,38 @@ async fn do_get(params: Option<Query<HashMap<String, String>>>) -> String {
 #[debug_handler]
 async fn do_post(v: Result<Json<alerts::ActivityLog>, JsonRejection>) -> impl IntoResponse {
     match v {
-        Ok(v) => match &v.data.context.activity_log {
-            alerts::InnerActivityLog::ServiceHealth(ev) => {
-                handle_service_health(ev).await.into_response()
+        Ok(v) => {
+            save_doc(&v)
+                .await
+                .map_err(|e| {
+                    // XXX This doesn't do what I want it to do, so we do die on the unwrap
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+                })
+                .unwrap();
+
+            match &v.data.context.activity_log {
+                alerts::InnerActivityLog::ServiceHealth(ev) => {
+                    handle_service_health(ev).await.into_response()
+                }
+                alerts::InnerActivityLog::SecurityLog(ev) => {
+                    handle_security_log(ev).await.into_response()
+                }
+                alerts::InnerActivityLog::Recommendation(ev) => {
+                    handle_recommendation(ev).await.into_response()
+                }
+                alerts::InnerActivityLog::ResourceHealth(ev) => {
+                    handle_resource_health(ev).await.into_response()
+                }
+                alerts::InnerActivityLog::Administrative(ev) => {
+                    handle_administrative(ev).await.into_response()
+                }
+                alerts::InnerActivityLog::Dummy => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Dummy event should never happen!"),
+                )
+                    .into_response(),
             }
-            alerts::InnerActivityLog::SecurityLog(ev) => {
-                handle_security_log(ev).await.into_response()
-            }
-            alerts::InnerActivityLog::Recommendation(ev) => {
-                handle_recommendation(ev).await.into_response()
-            }
-            alerts::InnerActivityLog::ResourceHealth(ev) => {
-                handle_resource_health(ev).await.into_response()
-            }
-            alerts::InnerActivityLog::Administrative(ev) => {
-                handle_administrative(ev).await.into_response()
-            }
-            alerts::InnerActivityLog::Dummy => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Dummy event should neverhappen!"),
-            )
-                .into_response(),
-        },
+        }
         Err(JsonRejection::MissingJsonContentType(_)) => {
             // We'll come here if there's no data, too.  This is probably a documentation RFE, at
             // least.
@@ -109,6 +121,11 @@ async fn handle_service_health(
 ) -> axum::response::Result<(StatusCode, String)> {
     // XXX We should continue if we couldn't parse the text as HTML; we just put the text straight
     // into the message.  But for now, just error out.
+    // XXX It would be nice to make these map_err() calls more compact, maybe by having a map_ise()
+    // function.  But the map_err() argument is a function that takes a single Error argument, and
+    // we'd need to be able to pass the string, too.  Can we do something like have map_ise()
+    // return a function that does the right thing, and then put map_ise(msg) as the argument to
+    // map_err()?
     let msg = html::build_message(ev).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -116,51 +133,13 @@ async fn handle_service_health(
         )
     })?;
 
-    // On MacOS, a connection to 169.254.169.254 (which happens for the managed identity
-    // credential) doesn't always return.  A simple curl to that will hang, too, the first time,
-    // and then every connection after that will give "Host is down" until it seems to reset
-    // itself.  169.254/16 is used for host-to-host connections when there's no real network.  All
-    // references to this I can find are about being unable to connect to a real network, not this
-    // problem.  So we'll have to work around it.
-    let creds = if uname().unwrap().sysname == "Darwin" {
-        trace!("Darwin system; using Azure CLI credential");
-        DefaultAzureCredential::with_sources(vec![DefaultAzureCredentialEnum::AzureCli(
-            AzureCliCredential {},
-        )])
-    } else {
-        trace!("Using default Azure credential options");
-        DefaultAzureCredential::default()
-    };
-
-    let vault_name = env::var("KEYVAULT_NAME").unwrap_or("coros-svc-health-alert".into());
-
-    let client = SecretClient::new(
-        &format!("https://{vault_name}.vault.azure.net"),
-        std::sync::Arc::new(creds),
-    )
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to initialize Key Vault client: {e}"),
-        )
-    })?;
-    trace!("Created client; retrieving secret");
-
     let secret_name = env::var("SLACK_API_KEY_NAME").unwrap_or("slack-bot-oauth-token".into());
-    // It would be nice to make this map_err() call more compact, maybe by having a map_ise()
-    // function.  But the map_err() argument is a function that takes a single Error argument, and
-    // we'd need to be able to pass the string, too.  Can we do something like have map_ise()
-    // return a function that does the right thing, and then put map_ise(msg) as the argument to
-    // map_err()?
-    let secret = client.get(&secret_name).into_future().await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to retrieve secret '{secret_name}' from Key Vault: {e}"),
-        )
-    })?;
+    let secret = keyvault_get_secret(&secret_name)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let slack_client = SlackClient::new(SlackClientHyperConnector::new());
-    let slack_token_value: SlackApiTokenValue = secret.value.into();
+    let slack_token_value: SlackApiTokenValue = secret.into();
     let slack_token = SlackApiToken::new(slack_token_value);
     let slack_session = slack_client.open_session(&slack_token);
     let slack_auth_test = slack_session.auth_test().await.map_err(|e| {
@@ -199,6 +178,114 @@ async fn handle_service_health(
              Slack post message response: {resp:#?}\n"
         ),
     ))
+}
+
+#[instrument(skip(doc))]
+async fn save_doc(Json(doc): &Json<alerts::ActivityLog>) -> Result<InsertOneResult, anyhow::Error> {
+    let key_name = env::var("COSMOS_CONNECTION_STRING")
+        .unwrap_or("cosmos-mongodb-primary-connection-string".into());
+    let connection_string = keyvault_get_secret(&key_name)
+        .await
+        .context("Failed to get CosmosDB connection string from Key Vault")?;
+
+    let client_options = ClientOptions::parse(&connection_string).await?;
+
+    let client = Client::with_options(client_options)?;
+
+    let database_name = env::var("COSMOS_DB_NAME").unwrap_or("service-health-alerts".into());
+    let collection_name = env::var("COSMOS_COLLECTION_NAME").unwrap_or("alerts".into());
+
+    let db = client.database(&database_name);
+    let collection = db.collection::<alerts::ActivityLog>(&collection_name);
+
+    collection
+        .insert_one(doc, None)
+        .await
+        .context("Failed to insert activity log into DB")
+        .map_err(|e| {
+            error!("{e}");
+            e
+        })
+        .map(|x| {
+            match x.inserted_id.as_object_id() {
+                Some(id) => debug!("Persisted activity log as document id {id}"),
+                None => {
+                    warn!("Activity log insertion succeeded, but failed to return object ID: {x:?}")
+                }
+            };
+            x
+        })
+}
+
+// #[instrument(skip(doc))]
+// async fn save_doc_sql(
+//     Json(doc): &Json<alerts::ActivityLog>,
+// ) -> Result<CreateDocumentResponse, azure_core::error::Error> {
+//     let key_name = env::var("COSMOS_KEY_NAME").unwrap_or("cosmos-primary-master-key".into());
+//     let primary_key = keyvault_get_secret(&key_name).await?;
+//
+//     let auth_token = AuthorizationToken::primary_from_base64(&primary_key).map_err(|e| {
+//         error!("unable to decode Cosmos account key");
+//         e
+//     })?;
+//
+//     let account = env::var("COSMOS_ACCOUNT").unwrap_or("coros-service-health-alerts".into());
+//     trace!("CosmosDB account: '{}'", &account);
+//     let cosmos_client = CosmosClient::new(account, auth_token);
+//     let database_name = env::var("COSMOS_DB_NAME").unwrap_or("service-health-alerts".into());
+//     trace!("CosmosDB DB name: '{}'", &database_name);
+//     let database_client = cosmos_client.database_client(database_name);
+//     let collection_name = env::var("COSMOS_COLLECTION_NAME").unwrap_or("alerts".into());
+//     trace!("CosmosDB Collection name: '{}'", &collection_name);
+//     let collection_client = database_client.collection_client(collection_name);
+//
+//     collection_client
+//         .create_document(doc.clone())
+//         .into_future()
+//         .await
+// }
+
+// I'd return the KeyVaultSecret, but the type is inaccessible.
+#[instrument]
+async fn keyvault_get_secret(secret_name: &str) -> Result<String, azure_core::error::Error> {
+    // On MacOS, a connection to 169.254.169.254 (which happens for the managed identity
+    // credential) doesn't always return.  A simple curl to that will hang, too, the first time,
+    // and then every connection after that will give "Host is down" until it seems to reset
+    // itself.  169.254/16 is used for host-to-host connections when there's no real network.  All
+    // references to this I can find are about being unable to connect to a real network, not this
+    // problem.  So we'll have to work around it.
+    let creds = if uname().unwrap().sysname == "Darwin" {
+        trace!("Darwin system; using Azure CLI credential");
+        DefaultAzureCredential::with_sources(vec![DefaultAzureCredentialEnum::AzureCli(
+            AzureCliCredential {},
+        )])
+    } else {
+        trace!("Using default Azure credential options");
+        DefaultAzureCredential::default()
+    };
+
+    let vault_name = env::var("KEYVAULT_NAME").unwrap_or("coros-svc-health-alert".into());
+
+    let client = SecretClient::new(
+        &format!("https://{vault_name}.vault.azure.net"),
+        std::sync::Arc::new(creds),
+    )
+    .map_err(|e| {
+        // Can't seem to convert this to another azure_core Error, so just log
+        error!("Failed to initialize Key Vault client");
+        e
+    })?;
+    trace!("Created client; retrieving secret");
+
+    client
+        .get(secret_name)
+        .into_future()
+        .await
+        .map_err(|e| {
+            error!("Failed to retrieve secret '{secret_name}' from Key Vault");
+            e
+        })
+        .and_then(|secret| Ok(secret.value))
 }
 
 #[instrument(skip(_ev))]

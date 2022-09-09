@@ -1,10 +1,10 @@
 use chrono::{DateTime, Utc};
-use serde::{self, Deserialize, Deserializer};
+use serde::{self, Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use uuid::Uuid;
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 #[allow(unused)]
 pub struct ActivityLog {
@@ -12,7 +12,7 @@ pub struct ActivityLog {
     pub data: AlertData,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 #[allow(unused)]
 pub struct AlertData {
@@ -22,14 +22,14 @@ pub struct AlertData {
     pub context: AlertContext,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 #[allow(unused)]
 pub struct AlertContext {
     pub activity_log: InnerActivityLog,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(untagged)]
 pub enum InnerActivityLog {
     #[default]
@@ -43,7 +43,7 @@ pub enum InnerActivityLog {
 
 // common fields would use flatten
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default, rename_all = "camelCase")]
 #[allow(unused)]
 pub struct ServiceHealth {
@@ -62,7 +62,7 @@ pub struct ServiceHealth {
     pub properties: ServiceHealthProperties,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default, rename_all = "camelCase")]
 #[allow(unused)]
 pub struct ServiceHealthProperties {
@@ -81,7 +81,7 @@ pub struct ServiceHealthProperties {
     pub version: String,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default, rename_all = "camelCase")]
 #[allow(unused)]
 pub struct Recommendation {
@@ -89,7 +89,7 @@ pub struct Recommendation {
     event_source: String,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default, rename_all = "camelCase")]
 #[allow(unused)]
 pub struct SecurityLog {
@@ -97,7 +97,7 @@ pub struct SecurityLog {
     event_source: String,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default, rename_all = "camelCase")]
 #[allow(unused)]
 pub struct ResourceHealth {
@@ -105,7 +105,7 @@ pub struct ResourceHealth {
     event_source: String,
 }
 
-#[derive(Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default, rename_all = "camelCase")]
 #[allow(unused)]
 pub struct Administrative {
