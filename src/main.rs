@@ -247,7 +247,11 @@ async fn save_doc(Json(doc): &Json<alerts::ActivityLog>) -> Result<InsertOneResu
 
 // I'd return the KeyVaultSecret, but the type is inaccessible.
 #[instrument]
-async fn keyvault_get_secret(secret_name: &str) -> Result<String, azure_core::error::Error> {
+async fn keyvault_get_secret(secret_name: &str) -> Result<String, anyhow::Error> {
+    let vault_name = env::var("KEYVAULT_NAME").unwrap_or("coros-svc-health-alert".into());
+
+    trace!("Retrieving secret {secret_name} from Key Vault {vault_name}");
+
     // On MacOS, a connection to 169.254.169.254 (which happens for the managed identity
     // credential) doesn't always return.  A simple curl to that will hang, too, the first time,
     // and then every connection after that will give "Host is down" until it seems to reset
@@ -264,27 +268,18 @@ async fn keyvault_get_secret(secret_name: &str) -> Result<String, azure_core::er
         DefaultAzureCredential::default()
     };
 
-    let vault_name = env::var("KEYVAULT_NAME").unwrap_or("coros-svc-health-alert".into());
-
     let client = SecretClient::new(
         &format!("https://{vault_name}.vault.azure.net"),
         std::sync::Arc::new(creds),
     )
-    .map_err(|e| {
-        // Can't seem to convert this to another azure_core Error, so just log
-        error!("Failed to initialize Key Vault client");
-        e
-    })?;
+    .with_context(|| format!("Failed to initialize Key Vault client"))?;
     trace!("Created client; retrieving secret");
 
     client
         .get(secret_name)
         .into_future()
         .await
-        .map_err(|e| {
-            error!("Failed to retrieve secret '{secret_name}' from Key Vault");
-            e
-        })
+        .with_context(|| format!("Failed to retrieve secret '{secret_name}' from Key Vault"))
         .and_then(|secret| Ok(secret.value))
 }
 

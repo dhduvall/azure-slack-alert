@@ -741,7 +741,6 @@ dependencies = [
  "anyhow",
  "axum",
  "axum-macros",
- "azure_core",
  "azure_identity",
  "azure_security_keyvault",
  "chrono",
