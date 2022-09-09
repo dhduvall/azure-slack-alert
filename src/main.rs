@@ -20,6 +20,35 @@ use uname::uname;
 pub mod alerts;
 pub mod html;
 
+enum EnvDefaults {
+    CosmosCollectionName,
+    CosmosConnectionStringKey,
+    CosmosDBName,
+    FunctionsCustomHandlerPort,
+    KeyVaultName,
+    SlackAPIKeyName,
+}
+
+fn env_default(var: EnvDefaults) -> String {
+    let kv_default = match var {
+        EnvDefaults::CosmosConnectionStringKey => (
+            "COSMOS_CONNECTION_STRING_KEY",
+            "cosmos-mongodb-primary-connection-string",
+        ),
+        EnvDefaults::CosmosDBName => ("COSMOS_DB_NAME", "service-health-alerts"),
+        EnvDefaults::CosmosCollectionName => ("COSMOS_COLLECTION_NAME", "alerts"),
+        EnvDefaults::FunctionsCustomHandlerPort => ("FUNCTIONS_CUSTOMHANDLER_PORT", "3000"),
+        EnvDefaults::KeyVaultName => ("KEYVAULT_NAME", "coros-svc-health-alert"),
+        EnvDefaults::SlackAPIKeyName => ("SLACK_API_KEY_NAME", "slack-bot-oauth-token"),
+    };
+
+    if let Ok(value) = env::var(kv_default.0) {
+        value
+    } else {
+        kv_default.1.to_string()
+    }
+}
+
 #[tokio::main]
 #[instrument]
 async fn main() {
@@ -27,13 +56,9 @@ async fn main() {
 
     let app = Router::new().route("/api/ServiceHealthAlert", get(do_get).post(do_post));
 
-    let port_envvar = "FUNCTIONS_CUSTOMHANDLER_PORT";
-    let port: u16 = match env::var(port_envvar) {
-        Ok(val) => val
-            .parse()
-            .expect("Custom Handler port in $FUNCTIONS_CUSTOMHANDLER_PORT is not a number!"),
-        Err(_) => 3000,
-    };
+    let port: u16 = env_default(EnvDefaults::FunctionsCustomHandlerPort)
+        .parse()
+        .expect("Custom Handler port in $FUNCTIONS_CUSTOMHANDLER_PORT is not a number!");
 
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     axum::Server::bind(&addr)
@@ -136,8 +161,7 @@ async fn handle_service_health(
         )
     })?;
 
-    let secret_name =
-        env::var("SLACK_API_KEY_NAME").unwrap_or_else(|_| "slack-bot-oauth-token".into());
+    let secret_name = env_default(EnvDefaults::SlackAPIKeyName);
     let secret = keyvault_get_secret(&secret_name)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -186,8 +210,7 @@ async fn handle_service_health(
 
 #[instrument(skip(doc))]
 async fn save_doc(Json(doc): &Json<alerts::ActivityLog>) -> Result<InsertOneResult, anyhow::Error> {
-    let key_name = env::var("COSMOS_CONNECTION_STRING_KEY")
-        .unwrap_or_else(|_| "cosmos-mongodb-primary-connection-string".into());
+    let key_name = env_default(EnvDefaults::CosmosConnectionStringKey);
     let connection_string = keyvault_get_secret(&key_name)
         .await
         .context("failed to get CosmosDB connection string from Key Vault")?;
@@ -197,9 +220,8 @@ async fn save_doc(Json(doc): &Json<alerts::ActivityLog>) -> Result<InsertOneResu
     let client = Client::with_options(client_options)?;
 
     // The database will get created if it doesn't exist.  Can this behavior be changed?
-    let database_name =
-        env::var("COSMOS_DB_NAME").unwrap_or_else(|_| "service-health-alerts".into());
-    let collection_name = env::var("COSMOS_COLLECTION_NAME").unwrap_or_else(|_| "alerts".into());
+    let database_name = env_default(EnvDefaults::CosmosDBName);
+    let collection_name = env_default(EnvDefaults::CosmosCollectionName);
 
     let db = client.database(&database_name);
     let collection = db.collection::<alerts::ActivityLog>(&collection_name);
@@ -222,7 +244,7 @@ async fn save_doc(Json(doc): &Json<alerts::ActivityLog>) -> Result<InsertOneResu
 // I'd return the KeyVaultSecret, but the type is inaccessible.
 #[instrument]
 async fn keyvault_get_secret(secret_name: &str) -> Result<String, anyhow::Error> {
-    let vault_name = env::var("KEYVAULT_NAME").unwrap_or_else(|_| "coros-svc-health-alert".into());
+    let vault_name = env_default(EnvDefaults::KeyVaultName);
 
     trace!("Retrieving secret {secret_name} from Key Vault {vault_name}");
 
