@@ -220,34 +220,6 @@ async fn save_doc(Json(doc): &Json<alerts::ActivityLog>) -> Result<InsertOneResu
         })
 }
 
-// #[instrument(skip(doc))]
-// async fn save_doc_sql(
-//     Json(doc): &Json<alerts::ActivityLog>,
-// ) -> Result<CreateDocumentResponse, azure_core::error::Error> {
-//     let key_name = env::var("COSMOS_KEY_NAME").unwrap_or("cosmos-primary-master-key".into());
-//     let primary_key = keyvault_get_secret(&key_name).await?;
-//
-//     let auth_token = AuthorizationToken::primary_from_base64(&primary_key).map_err(|e| {
-//         error!("unable to decode Cosmos account key");
-//         e
-//     })?;
-//
-//     let account = env::var("COSMOS_ACCOUNT").unwrap_or("coros-service-health-alerts".into());
-//     trace!("CosmosDB account: '{}'", &account);
-//     let cosmos_client = CosmosClient::new(account, auth_token);
-//     let database_name = env::var("COSMOS_DB_NAME").unwrap_or("service-health-alerts".into());
-//     trace!("CosmosDB DB name: '{}'", &database_name);
-//     let database_client = cosmos_client.database_client(database_name);
-//     let collection_name = env::var("COSMOS_COLLECTION_NAME").unwrap_or("alerts".into());
-//     trace!("CosmosDB Collection name: '{}'", &collection_name);
-//     let collection_client = database_client.collection_client(collection_name);
-//
-//     collection_client
-//         .create_document(doc.clone())
-//         .into_future()
-//         .await
-// }
-
 // I'd return the KeyVaultSecret, but the type is inaccessible.
 #[instrument]
 async fn keyvault_get_secret(secret_name: &str) -> Result<String, anyhow::Error> {
