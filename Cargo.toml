@@ -30,3 +30,4 @@ html-escape = "0.2.11"
 mongodb = { version = "2.3.0", features = ["zlib-compression"] }
 atty = "0.2.14"
 tracing-core = "0.1.29"
+tower-http = { version = "0.3.4", features = ["trace", "catch-panic"] }

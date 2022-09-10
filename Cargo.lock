@@ -763,6 +763,7 @@ dependencies = [
  "serde_json",
  "slack-morphism",
  "tokio",
+ "tower-http",
  "tracing",
  "tracing-core",
  "tracing-subscriber",
@@ -2314,6 +2315,7 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]

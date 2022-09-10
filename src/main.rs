@@ -93,7 +93,10 @@ fn init_logger() {
 async fn main() {
     init_logger();
 
-    let app = Router::new().route("/api/ServiceHealthAlert", get(do_get).post(do_post));
+    let app = Router::new()
+        .route("/api/ServiceHealthAlert", get(do_get).post(do_post))
+        .layer(tower_http::catch_panic::CatchPanicLayer::new())
+        .layer(tower_http::trace::TraceLayer::new_for_http());
 
     let port: u16 = env_default(EnvDefaults::FunctionsCustomHandlerPort)
         .parse()
