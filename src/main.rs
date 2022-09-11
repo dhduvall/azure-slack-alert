@@ -118,50 +118,15 @@ async fn do_get(params: Option<Query<HashMap<String, String>>>) -> String {
     }
 }
 
+/// This decodes the input as a JSON document representing an activity log and passes it on if that
+/// succeeds.
 // All the return types must be the same.  If that's not appropriate, we can call .into_response():
 // https://docs.rs/axum/0.5.15/axum/response/index.html#returning-different-response-types
 #[instrument(skip(v))]
 #[debug_handler]
 async fn do_post(v: Result<Json<alerts::ActivityLog>, JsonRejection>) -> impl IntoResponse {
     match v {
-        Ok(v) => {
-            if let Err(e) = save_doc(&v).await {
-                // Log the error (the full chain using the alternate selector), but it doesn't
-                // impact the primary duty of this program, which is to post the activity log to
-                // Slack.
-                // XXX Maybe put some of the non-fatal errors we run into along the way into the
-                // Slack message?  Maybe in a separate admin conversation?
-                // XXX It'd be nice if anyhow::Error would serialize into JSON.  There's
-                // https://github.com/dtolnay/anyhow/issues/67 which was closed due to
-                // non-responsiveness.
-                error!("Failed to persist activity log: {e:#}");
-                // Display a multi-line version with all the struct members.
-                debug!("Failed to persist activity log: {e:#?}");
-            }
-
-            match &v.data.context.activity_log {
-                alerts::InnerActivityLog::ServiceHealth(ev) => {
-                    handle_service_health(ev).await.into_response()
-                }
-                alerts::InnerActivityLog::SecurityLog(ev) => {
-                    handle_security_log(ev).await.into_response()
-                }
-                alerts::InnerActivityLog::Recommendation(ev) => {
-                    handle_recommendation(ev).await.into_response()
-                }
-                alerts::InnerActivityLog::ResourceHealth(ev) => {
-                    handle_resource_health(ev).await.into_response()
-                }
-                alerts::InnerActivityLog::Administrative(ev) => {
-                    handle_administrative(ev).await.into_response()
-                }
-                alerts::InnerActivityLog::Dummy => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Dummy event should never happen!".to_string(),
-                )
-                    .into_response(),
-            }
-        }
+        Ok(v) => handle_activity_log(&v).await.into_response(),
         Err(JsonRejection::MissingJsonContentType(_)) => {
             // We'll come here if there's no data, too.  This is probably a documentation RFE, at
             // least.
@@ -184,24 +149,54 @@ async fn do_post(v: Result<Json<alerts::ActivityLog>, JsonRejection>) -> impl In
     }
 }
 
-#[instrument(skip(ev))]
+#[instrument(skip(al))]
 // #[debug_handler]
-async fn handle_service_health(
-    ev: &alerts::ServiceHealth,
+async fn handle_activity_log(
+    al: &alerts::ActivityLog,
 ) -> axum::response::Result<(StatusCode, String)> {
-    // XXX We should continue if we couldn't parse the text as HTML; we just put the text straight
-    // into the message.  But for now, just error out.
+    if let Err(e) = save_doc(al).await {
+        // Log the error (the full chain using the alternate selector), but it doesn't
+        // impact the primary duty of this program, which is to post the activity log to
+        // Slack.
+        // XXX Maybe put some of the non-fatal errors we run into along the way into the
+        // Slack message?  Maybe in a separate admin conversation?
+        // XXX It'd be nice if anyhow::Error would serialize into JSON.  There's
+        // https://github.com/dtolnay/anyhow/issues/67 which was closed due to
+        // non-responsiveness.
+        error!("Failed to persist activity log: {e:#}");
+        // Display a multi-line version with all the struct members.
+        debug!("Failed to persist activity log: {e:#?}");
+    }
+
+    // Construct the message we send to Slack.
     // XXX It would be nice to make these map_err() calls more compact, maybe by having a map_ise()
     // function.  But the map_err() argument is a function that takes a single Error argument, and
     // we'd need to be able to pass the string, too.  Can we do something like have map_ise()
     // return a function that does the right thing, and then put map_ise(msg) as the argument to
     // map_err()?
-    let msg = html::build_message(ev).map_err(|e| {
-        (
+    // XXX Can we (does it even make sense to) change the String portion of the error to be an
+    // anyhow::Error?
+    let msg = match &al.data.context.activity_log {
+        alerts::InnerActivityLog::ServiceHealth(_) => html::build_message(al).map_err(|e| {
+            // XXX We should continue if we couldn't parse the text as HTML, just putting the text
+            // straight into the message.  But for now, just error out.
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Failed to parse communication as HTML: {e}"),
+            )
+        }),
+        alerts::InnerActivityLog::SecurityLog(_)
+        | alerts::InnerActivityLog::Recommendation(_)
+        | alerts::InnerActivityLog::ResourceHealth(_)
+        | alerts::InnerActivityLog::Administrative(_) => Err((
+            StatusCode::NOT_IMPLEMENTED,
+            "activity log type not implemented".to_string(),
+        )),
+        alerts::InnerActivityLog::Dummy => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to parse communication as HTML: {e}"),
-        )
-    })?;
+            "Dummy event should never happen!".to_string(),
+        )),
+    }?;
 
     let secret_name = env_default(EnvDefaults::SlackAPIKeyName);
     let secret = keyvault_get_secret(&secret_name)
@@ -213,7 +208,6 @@ async fn handle_service_health(
     let slack_token = SlackApiToken::new(slack_token_value);
     let slack_session = slack_client.open_session(&slack_token);
     let slack_auth_test = slack_session.auth_test().await.map_err(|e| {
-        // XXX Could run api_test() here to make sure basic connectivity is okay.
         debug!("Slack auth test failure: {e:#?}");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -251,7 +245,7 @@ async fn handle_service_health(
 }
 
 #[instrument(skip(doc))]
-async fn save_doc(Json(doc): &Json<alerts::ActivityLog>) -> Result<InsertOneResult, anyhow::Error> {
+async fn save_doc(doc: &alerts::ActivityLog) -> Result<InsertOneResult, anyhow::Error> {
     let key_name = env_default(EnvDefaults::CosmosConnectionStringKey);
     let connection_string = keyvault_get_secret(&key_name)
         .await

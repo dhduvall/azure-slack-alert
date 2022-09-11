@@ -28,10 +28,16 @@ impl State {
 /// Given an event, extract the interesting portions and construct a message for Slack.
 // XXX Should this return text in appropriate markup?  Should this return some sort of block kit
 // type?
-pub fn build_message(ev: &alerts::ServiceHealth) -> Result<String, Error> {
+pub fn build_message(al: &alerts::ActivityLog) -> Result<String, Error> {
     // The communication property is (probably?) the thing most likely to have paragraph-style
     // descriptive text.  It may be in HTML.
-    let buf = handle_html(&ev.properties.communication)?;
+    let buf = match &al.data.context.activity_log {
+        alerts::InnerActivityLog::ServiceHealth(ev) => handle_html(&ev.properties.communication)?,
+        _ => {
+            // We should never get here since the only caller calls us only on a ServiceHealth event.
+            panic!("Unimplemented activity log type");
+        }
+    };
 
     debug!("Constructed message: {:?}", buf);
     Ok(buf)
@@ -40,6 +46,9 @@ pub fn build_message(ev: &alerts::ServiceHealth) -> Result<String, Error> {
 fn handle_html(html: &str) -> Result<String, Error> {
     trace!("Parsing possible HTML: {:?}", html);
     let dom = Dom::parse(html)?;
+
+    // XXX Seems to be a bug in the parser, which strips whitespace before and after text nodes.
+    // https://github.com/mathiversen/html-parser/issues/22
 
     if !dom.errors.is_empty() {
         debug!("Non-fatal errors during parsing: {:?}", dom.errors);
@@ -175,5 +184,28 @@ mod tests {
 
         let res = handle_html(html).unwrap();
         assert_eq!(res, "\n1. one\n1. two\n");
+    }
+
+    #[test]
+    // These two tests are failing because of the parser bug mentioned in handle_html().
+    #[should_panic]
+    fn test_space_before_link() {
+        let html = r#"
+        Words. <a href="https://bit.ly">Link words.</a> More words.
+        "#;
+
+        let res = handle_html(html).unwrap();
+        assert_eq!(res, "Words. <https://bit.ly|Link words.> More words.");
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_space_before_b() {
+        let html = r#"
+        Words. <b>Bold words.</b> More words.
+        "#;
+
+        let res = handle_html(html).unwrap();
+        assert_eq!(res, "Words. *Bold words.* More words.");
     }
 }
