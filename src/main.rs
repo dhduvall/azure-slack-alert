@@ -125,35 +125,153 @@ async fn do_get(params: Option<Query<HashMap<String, String>>>) -> String {
 #[instrument(skip(v))]
 #[debug_handler]
 async fn do_post(v: Result<Json<alerts::ActivityLog>, JsonRejection>) -> impl IntoResponse {
-    match v {
-        Ok(v) => handle_activity_log(&v).await.into_response(),
-        Err(JsonRejection::MissingJsonContentType(_)) => {
-            // We'll come here if there's no data, too.  This is probably a documentation RFE, at
-            // least.
-            (
-                StatusCode::BAD_REQUEST,
-                String::from("Missing JSON content type"),
-            )
-                .into_response()
+    // We don't need for this match to return a Result in order to use ?, but we want to be able to
+    // return an error, and for all arms to match, the successful paths need to do so as well, so
+    // the errors need to be optional, and that's pretty much what a Result is.
+    let resp: anyhow::Result<(StatusCode, String)> = match v {
+        Ok(v) => match handle_activity_log(&v).await {
+            Ok(v) => anyhow::Ok(v),
+            Err(e) => Err(e),
+        },
+        Err(JsonRejection::MissingJsonContentType(e)) => Err(anyhow::Error::new(e)),
+        Err(JsonRejection::JsonDataError(e)) => Err(anyhow::Error::new(e)),
+        Err(JsonRejection::JsonSyntaxError(e)) => Err(anyhow::Error::new(e)),
+        Err(JsonRejection::BytesRejection(e)) => Err(anyhow::Error::new(e)),
+        Err(e) => Err(e).with_context(|| {
+            HTTPErrorContext::new(StatusCode::BAD_REQUEST, "Unknown error unpacking JSON")
+        }),
+    };
+
+    match resp {
+        Ok(r) => r.into_response(),
+        Err(e) => {
+            // Log the full error.
+            // XXX stuffing all the error data into a string is lazy.  We probably want to expand
+            // it using tracing-core's experimental support for valuable.  It's really the only way
+            // to get nested structure.  At least this string contains all the nested error data.
+            error!("#?: {e:#?}");
+            error!("#: {e:#}");
+            error!("?: {e:?}");
+            error!(": {e}");
+
+            if e.is::<HTTPErrorContext>() {
+                debug!("e is HTTPErrorContext");
+            } else if e.is::<StatusCode>() {
+                debug!("e is StatusCode");
+            } else if e.is::<JsonRejection>() {
+                debug!("e is JsonRejection");
+            } else {
+                debug!("nope");
+            }
+
+            // e.into_response();
+
+            // StatusCode::INTERNAL_SERVER_ERROR.into_response()
+
+            // Look into the error and try to find something that implements IntoResponse.
+            if let Some(x) = e.downcast_ref::<HTTPErrorContext>() {
+                debug!("downcast to HTTPErrorContext");
+                // We clone because *x (x is a ref to HTTPErrorContext) is moved when calling
+                // into_response(). *x is behind a shared reference, which prevents the move, and
+                // the workaround that's used for StatusCode, which is an implicitly use of Copy,
+                // is unavailable to us.
+                x.clone().into_response()
+            } else if let Some(x) = e.downcast_ref::<StatusCode>() {
+                debug!("downcast to StatusCode");
+                x.into_response()
+            } else {
+                // XXX We're always ending up here.  :(
+                debug!("some other kind of error");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
         }
-        Err(JsonRejection::JsonDataError(_)) => {
-            (StatusCode::BAD_REQUEST, String::from("JSON data error")).into_response()
-        }
-        Err(JsonRejection::JsonSyntaxError(_)) => {
-            (StatusCode::BAD_REQUEST, String::from("JSON syntax error")).into_response()
-        }
-        Err(JsonRejection::BytesRejection(_)) => {
-            (StatusCode::BAD_REQUEST, String::from("Bytes Rejection")).into_response()
-        }
-        Err(_) => (StatusCode::BAD_REQUEST, String::from("Other error")).into_response(),
     }
 }
 
+#[derive(Clone, Debug)]
+struct HTTPErrorContext {
+    status_code: StatusCode,
+    log_msg: String,
+}
+
+// This type exists solely to be able to implement external traits on what might otherwise just be
+// a tuple.
+impl HTTPErrorContext {
+    fn new<S: Into<String>>(status_code: StatusCode, log_msg: S) -> Self {
+        let log_msg = log_msg.into();
+        Self {
+            status_code,
+            log_msg,
+        }
+    }
+}
+
+impl axum_core::response::IntoResponse for HTTPErrorContext {
+    fn into_response(self) -> axum::response::Response {
+        let mut res = self.log_msg.into_response();
+        *res.status_mut() = self.status_code;
+        res
+    }
+}
+
+// Needed for it to be an anyhow error.
+impl std::fmt::Display for HTTPErrorContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "Error {}: {}", self.status_code, self.log_msg)
+    }
+}
+
+// This exists solely to be able to implement external traits on the tuple.
+struct StatusString(StatusCode, String);
+
+impl axum_core::response::IntoResponse for StatusString {
+    fn into_response(self) -> axum::response::Response {
+        let mut res = self.1.into_response();
+        *res.status_mut() = self.0;
+        res
+    }
+}
+
+// Needed for it to be an anyhow error.
+impl std::fmt::Display for StatusString {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        // Not necessarily always an error.
+        write!(f, "Error {}: {}", self.0, self.1)
+    }
+}
+
+// Error handling
+// - Whatever is called by the router needs to return an axum Response.  Currently, this is
+//   do_post().
+// - The Response must include a status code and something that goes into the body.
+// - The status code is determined by the root cause error (probably?); the body is probably set in
+//   the same place.
+// - Errors propagating back down the stack must thus carry the status code and body.
+// - Errors propagating down the stack must chain
+// - Errors must be logged with full context; this probably means that we log as close to the
+//   bottom of the stack as we can.
+// - But at the bottom of the stack we have no idea what the error message should be, if there is
+//   one.  Maybe the outermost error has that information?  Or maybe that text has to be carried
+//   down as well.
+// - None of the functions in this module should really return anything.
+// - All HTTP-related decisions (like what failures are considered errors, and what HTTP status
+//   code they should be assigned) are being made in this module.
+//
+// I think we need a custom Error type that contains the status code and body (and maybe an
+// optional string useful to have in the logs).  It will need to implement whatever is necessary to
+// implement std::error::Error.
+//
+// Or it can just implement anyhow::Context (which basically means Display), and we chain with
+// .with_context().
+//
+// What does success look like here?  Just ()?  We shouldn't need anything other than 200, but if
+// we needed anything else, we'd need to pass back a status code and body message.
+//
+// Could do something like https://rust-on-nails.com/docs/full-stack-web/web-server/
+
 #[instrument(skip(al))]
 // #[debug_handler]
-async fn handle_activity_log(
-    al: &alerts::ActivityLog,
-) -> axum::response::Result<(StatusCode, String)> {
+async fn handle_activity_log(al: &alerts::ActivityLog) -> anyhow::Result<(StatusCode, String)> {
     if let Err(e) = save_doc(al).await {
         // Log the error (the full chain using the alternate selector), but it doesn't
         // impact the primary duty of this program, which is to post the activity log to
@@ -177,61 +295,56 @@ async fn handle_activity_log(
     // XXX Can we (does it even make sense to) change the String portion of the error to be an
     // anyhow::Error?
     let msg = match &al.data.context.activity_log {
-        alerts::InnerActivityLog::ServiceHealth(_) => html::build_message(al).map_err(|e| {
+        alerts::InnerActivityLog::ServiceHealth(_) => html::build_message(al).with_context(|| {
             // XXX We should continue if we couldn't parse the text as HTML, just putting the text
             // straight into the message.  But for now, just error out.
-            (
+            HTTPErrorContext::new(
                 StatusCode::BAD_REQUEST,
-                format!("Failed to parse communication as HTML: {e}"),
+                "Failed to parse communication as HTML",
             )
         }),
         alerts::InnerActivityLog::SecurityLog(_)
         | alerts::InnerActivityLog::Recommendation(_)
         | alerts::InnerActivityLog::ResourceHealth(_)
-        | alerts::InnerActivityLog::Administrative(_) => Err((
-            StatusCode::NOT_IMPLEMENTED,
-            "activity log type not implemented".to_string(),
-        )),
-        alerts::InnerActivityLog::Dummy => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Dummy event should never happen!".to_string(),
-        )),
+        | alerts::InnerActivityLog::Administrative(_) => {
+            Err(anyhow::anyhow!("activity log type not implemented"))
+                .context(StatusCode::NOT_IMPLEMENTED)
+        }
+        alerts::InnerActivityLog::Dummy => Err(anyhow::anyhow!("Dummy event should never happen!"))
+            .context(StatusCode::INTERNAL_SERVER_ERROR),
     }?;
 
     let secret_name = env_default(EnvDefaults::SlackAPIKeyName);
     let secret = keyvault_get_secret(&secret_name)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .context(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let slack_client = SlackClient::new(SlackClientHyperConnector::new());
     let slack_token_value: SlackApiTokenValue = secret.into();
     let slack_token = SlackApiToken::new(slack_token_value);
     let slack_session = slack_client.open_session(&slack_token);
-    let slack_auth_test = slack_session.auth_test().await.map_err(|e| {
-        debug!("Slack auth test failure: {e:#?}");
-        (
+    let slack_auth_test = slack_session.auth_test().await.with_context(|| {
+        HTTPErrorContext::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to perform an auth test connection to Slack: {e:#?}"),
+            "Failed to perform an auth test connection to Slack",
         )
     })?;
 
     // XXX Maybe this should come from a query parameter?
-    let user_id = env::var("SLACK_TARGET_USER").map_err(|_| {
-        debug!("Couldn't find target user in environment variable SLACK_TARGET_USER");
-        (
+    let user_id = env::var("SLACK_TARGET_USER").with_context(|| {
+        HTTPErrorContext::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "Service configured incorrectly".to_string(),
+            "Couldn't find target user in environment variable SLACK_TARGET_USER",
         )
     })?;
     let content = SlackMessageContent::new().with_text(msg);
     let req = SlackApiChatPostMessageRequest::new(user_id.into(), content);
-    let resp = slack_session.chat_post_message(&req).await.map_err(|e| {
-        debug!("Slack message post failure: {e:#?}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to post message: {e:#?}"),
-        )
-    })?;
+    let resp = slack_session
+        .chat_post_message(&req)
+        .await
+        .with_context(|| {
+            HTTPErrorContext::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed to post message")
+        })?;
 
     Ok((
         StatusCode::OK,
