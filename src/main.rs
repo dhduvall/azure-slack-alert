@@ -128,88 +128,61 @@ async fn do_get(params: Option<Query<HashMap<String, String>>>) -> String {
 #[instrument(skip(v))]
 #[debug_handler]
 async fn do_post(v: Result<Json<alerts::ActivityLog>, JsonRejection>) -> impl IntoResponse {
-    // We don't need for this match to return a Result in order to use ?, but we want to be able to
-    // return an error, and for all arms to match, the successful paths need to do so as well, so
-    // the errors need to be optional, and that's pretty much what a Result is.
-    let resp: anyhow::Result<(StatusCode, String)> = match v {
-        Ok(v) => match handle_activity_log(&v).await {
-            Ok(v) => anyhow::Ok(v),
-            Err(e) => Err(e),
-        },
-        Err(JsonRejection::MissingJsonContentType(e)) => Err(anyhow::Error::new(e)),
-        Err(JsonRejection::JsonDataError(e)) => Err(anyhow::Error::new(e)),
-        Err(JsonRejection::JsonSyntaxError(e)) => Err(anyhow::Error::new(e)),
-        Err(JsonRejection::BytesRejection(e)) => Err(anyhow::Error::new(e)),
-        Err(e) => Err(e).with_context(|| {
-            HTTPErrorContext::new(StatusCode::BAD_REQUEST, "Unknown error unpacking JSON")
-        }),
+    let resp = match v.http_err_map(StatusCode::BAD_REQUEST, "rejected JSON input".to_string()) {
+        Ok(v) => handle_activity_log(&v).await,
+        Err(e) => Err(e.into()),
     };
 
     match resp {
         Ok(r) => r.into_response(),
         Err(e) => {
-            // Log the full error.
+            // Log the full error, but return only the status code.
             // XXX stuffing all the error data into a string is lazy.  We probably want to expand
             // it using tracing-core's experimental support for valuable.  It's really the only way
             // to get nested structure.  At least this string contains all the nested error data.
             error!("#?: {e:#?}");
-            error!("#: {e:#}");
             error!("?: {e:?}");
-            error!(": {e}");
-
-            if e.is::<HTTPErrorContext>() {
-                debug!("e is HTTPErrorContext");
-            } else if e.is::<StatusCode>() {
-                debug!("e is StatusCode");
-            } else if e.is::<JsonRejection>() {
-                debug!("e is JsonRejection");
-            } else {
-                debug!("nope");
-            }
-
-            // e.into_response();
-
-            // StatusCode::INTERNAL_SERVER_ERROR.into_response()
-
-            // Look into the error and try to find something that implements IntoResponse.
-            if let Some(x) = e.downcast_ref::<HTTPErrorContext>() {
-                debug!("downcast to HTTPErrorContext");
-                // We clone because *x (x is a ref to HTTPErrorContext) is moved when calling
-                // into_response(). *x is behind a shared reference, which prevents the move, and
-                // the workaround that's used for StatusCode, which is an implicitly use of Copy,
-                // is unavailable to us.
-                x.clone().into_response()
-            } else if let Some(x) = e.downcast_ref::<StatusCode>() {
-                debug!("downcast to StatusCode");
-                x.into_response()
-            } else {
-                // XXX We're always ending up here.  :(
-                debug!("some other kind of error");
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            }
+            Err::<(StatusCode, String), _>(e.status_code).into_response()
         }
     }
 }
 
-#[derive(Clone, Debug)]
-struct HTTPErrorContext {
+#[derive(Debug)]
+struct HTTPError {
+    // source: Option<Box<dyn std::error::Error + Send + 'static>>,
     status_code: StatusCode,
     log_msg: String,
 }
 
 // This type exists solely to be able to implement external traits on what might otherwise just be
 // a tuple.
-impl HTTPErrorContext {
+impl HTTPError {
     fn new<S: Into<String>>(status_code: StatusCode, log_msg: S) -> Self {
         let log_msg = log_msg.into();
         Self {
+            // source: None,
             status_code,
             log_msg,
         }
     }
+
+    /*
+    fn wrap<E: std::error::Error + std::marker::Send + 'static, S: Into<String>>(
+        source: E,
+        status_code: StatusCode,
+        log_msg: S,
+    ) -> Self {
+        let log_msg = log_msg.into();
+        Self {
+            source: Some(Box::new(source)),
+            status_code,
+            log_msg,
+        }
+    }
+    */
 }
 
-impl axum_core::response::IntoResponse for HTTPErrorContext {
+impl axum_core::response::IntoResponse for HTTPError {
     fn into_response(self) -> axum::response::Response {
         let mut res = self.log_msg.into_response();
         *res.status_mut() = self.status_code;
@@ -218,28 +191,40 @@ impl axum_core::response::IntoResponse for HTTPErrorContext {
 }
 
 // Needed for it to be an anyhow error.
-impl std::fmt::Display for HTTPErrorContext {
+impl std::fmt::Display for HTTPError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "Error {}: {}", self.status_code, self.log_msg)
     }
 }
 
-// This exists solely to be able to implement external traits on the tuple.
-struct StatusString(StatusCode, String);
-
-impl axum_core::response::IntoResponse for StatusString {
-    fn into_response(self) -> axum::response::Response {
-        let mut res = self.1.into_response();
-        *res.status_mut() = self.0;
-        res
+/*
+impl std::error::Error for HTTPError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.source {
+            None => None,
+            Some(x) => Some(&*x),
+        }
     }
 }
+*/
 
-// Needed for it to be an anyhow error.
-impl std::fmt::Display for StatusString {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        // Not necessarily always an error.
-        write!(f, "Error {}: {}", self.0, self.1)
+// XXX Can we maybe create our own trait that lets us convert anyhow::Error into an axum Response?
+
+trait WrapErr<T> {
+    fn http_err_map(self, code: StatusCode, msg: String) -> Result<T, HTTPError>;
+}
+
+impl<T, E> WrapErr<T> for Result<T, E>
+where
+    E: std::fmt::Debug,
+{
+    // XXX Want to be able to take Into<String>
+    fn http_err_map(self, code: StatusCode, msg: String) -> Result<T, HTTPError> {
+        match self {
+            Ok(v) => Ok(v),
+            // It would be better to embed the error directly, rather than in the message string.
+            Err(e) => Err(HTTPError::new(code, format!("{msg}: {e:#?}"))),
+        }
     }
 }
 
@@ -270,11 +255,18 @@ impl std::fmt::Display for StatusString {
 // What does success look like here?  Just ()?  We shouldn't need anything other than 200, but if
 // we needed anything else, we'd need to pass back a status code and body message.
 //
-// Could do something like https://rust-on-nails.com/docs/full-stack-web/web-server/
+// Could do something like
+// https://rust-on-nails.com/docs/full-stack-web/web-server/ (custom error, impl Into from various
+// other errors, impl IntoResponse)
+// https://github.com/ndelvalle/rustapi/tree/master/src (enum, with thiserror)
+// rgit has a custom error that's a tuple struct around an anyhow Error, impling From that as well
+// as IntoResponse.
+// notify-run has a custom Result type that uses StatusCode as its error variant; it implements a
+// custom trait that logs the error and returns the appropriate StatusCode as an error variant.
 
 #[instrument(skip(al))]
 // #[debug_handler]
-async fn handle_activity_log(al: &alerts::ActivityLog) -> anyhow::Result<(StatusCode, String)> {
+async fn handle_activity_log(al: &alerts::ActivityLog) -> Result<(StatusCode, String), HTTPError> {
     match save_doc(al).await {
         Ok(v) => {
             info!("saved activity log with document ID {}", v.inserted_id);
@@ -295,64 +287,52 @@ async fn handle_activity_log(al: &alerts::ActivityLog) -> anyhow::Result<(Status
     }
 
     // Construct the message we send to Slack.
-    // XXX It would be nice to make these map_err() calls more compact, maybe by having a map_ise()
-    // function.  But the map_err() argument is a function that takes a single Error argument, and
-    // we'd need to be able to pass the string, too.  Can we do something like have map_ise()
-    // return a function that does the right thing, and then put map_ise(msg) as the argument to
-    // map_err()?
-    // XXX Can we (does it even make sense to) change the String portion of the error to be an
-    // anyhow::Error?
+    // XXX We should continue if we couldn't parse the text as HTML, just putting the text
+    // straight into the message.  But for now, just error out.
     let msg = match &al.data.context.activity_log {
-        alerts::InnerActivityLog::ServiceHealth(_) => html::build_message(al).with_context(|| {
-            // XXX We should continue if we couldn't parse the text as HTML, just putting the text
-            // straight into the message.  But for now, just error out.
-            HTTPErrorContext::new(
-                StatusCode::BAD_REQUEST,
-                "Failed to parse communication as HTML",
-            )
-        }),
+        alerts::InnerActivityLog::ServiceHealth(_) => html::build_message(al).http_err_map(
+            StatusCode::BAD_REQUEST,
+            "Failed to parse communication as HTML".to_string(),
+        ),
         alerts::InnerActivityLog::SecurityLog(_)
         | alerts::InnerActivityLog::Recommendation(_)
         | alerts::InnerActivityLog::ResourceHealth(_)
-        | alerts::InnerActivityLog::Administrative(_) => {
-            Err(anyhow::anyhow!("activity log type not implemented"))
-                .context(StatusCode::NOT_IMPLEMENTED)
-        }
-        alerts::InnerActivityLog::Dummy => Err(anyhow::anyhow!("Dummy event should never happen!"))
-            .context(StatusCode::INTERNAL_SERVER_ERROR),
+        | alerts::InnerActivityLog::Administrative(_) => Err(HTTPError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "activity log type not implemented".to_string(),
+        )),
+        alerts::InnerActivityLog::Dummy => Err(HTTPError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Dummy event should never happen!".to_string(),
+        )),
     }?;
 
     let secret_name = env_default(EnvDefaults::SlackAPIKeyName);
-    let secret = keyvault_get_secret(&secret_name)
-        .await
-        .context(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let secret = keyvault_get_secret(&secret_name).await.http_err_map(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Failed to get Slack key from Key Vault".to_string(),
+    )?;
 
     let slack_client = SlackClient::new(SlackClientHyperConnector::new());
     let slack_token_value: SlackApiTokenValue = secret.into();
     let slack_token = SlackApiToken::new(slack_token_value);
     let slack_session = slack_client.open_session(&slack_token);
-    let slack_auth_test = slack_session.auth_test().await.with_context(|| {
-        HTTPErrorContext::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to perform an auth test connection to Slack",
-        )
-    })?;
+    let slack_auth_test = slack_session.auth_test().await.http_err_map(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Failed to perform an auth test connection to Slack".to_string(),
+    )?;
 
     // XXX Maybe this should come from a query parameter?
-    let user_id = env::var("SLACK_TARGET_USER").with_context(|| {
-        HTTPErrorContext::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Couldn't find target user in environment variable SLACK_TARGET_USER",
-        )
-    })?;
+    let user_id = env::var("SLACK_TARGET_USER").http_err_map(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Couldn't find target user in environment variable SLACK_TARGET_USER".to_string(),
+    )?;
     let content = SlackMessageContent::new().with_text(msg);
     let req = SlackApiChatPostMessageRequest::new(user_id.into(), content);
-    let resp = slack_session
-        .chat_post_message(&req)
-        .await
-        .with_context(|| {
-            HTTPErrorContext::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed to post message")
-        })?;
+    let resp = slack_session.chat_post_message(&req).await.http_err_map(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Failed to post message".to_string(),
+    )?;
 
     Ok((
         StatusCode::OK,
