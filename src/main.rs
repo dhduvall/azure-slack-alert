@@ -14,7 +14,7 @@ use slack_morphism::prelude::*;
 use std::collections::HashMap;
 use std::env;
 use std::net::{Ipv4Addr, SocketAddr};
-use tracing::{debug, error, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 use uname::uname;
 
 pub mod alerts;
@@ -275,18 +275,23 @@ impl std::fmt::Display for StatusString {
 #[instrument(skip(al))]
 // #[debug_handler]
 async fn handle_activity_log(al: &alerts::ActivityLog) -> anyhow::Result<(StatusCode, String)> {
-    if let Err(e) = save_doc(al).await {
-        // Log the error (the full chain using the alternate selector), but it doesn't
-        // impact the primary duty of this program, which is to post the activity log to
-        // Slack.
-        // XXX Maybe put some of the non-fatal errors we run into along the way into the
-        // Slack message?  Maybe in a separate admin conversation?
-        // XXX It'd be nice if anyhow::Error would serialize into JSON.  There's
-        // https://github.com/dtolnay/anyhow/issues/67 which was closed due to
-        // non-responsiveness.
-        error!("Failed to persist activity log: {e:#}");
-        // Display a multi-line version with all the struct members.
-        debug!("Failed to persist activity log: {e:#?}");
+    match save_doc(al).await {
+        Ok(v) => {
+            info!("saved activity log with document ID {}", v.inserted_id);
+        }
+        Err(e) => {
+            // Log the error (the full chain using the alternate selector), but it doesn't
+            // impact the primary duty of this program, which is to post the activity log to
+            // Slack.
+            // XXX Maybe put some of the non-fatal errors we run into along the way into the
+            // Slack message?  Maybe in a separate admin conversation?
+            // XXX It'd be nice if anyhow::Error would serialize into JSON.  There's
+            // https://github.com/dtolnay/anyhow/issues/67 which was closed due to
+            // non-responsiveness.
+            error!("Failed to persist activity log: {e:#}");
+            // Display a multi-line version with all the struct members.
+            debug!("Failed to persist activity log: {e:#?}");
+        }
     }
 
     // Construct the message we send to Slack.
