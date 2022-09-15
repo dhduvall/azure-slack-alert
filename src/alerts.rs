@@ -36,7 +36,7 @@ pub struct AlertContext {
 pub enum InnerActivityLog {
     #[default]
     Dummy,
-    SecurityLog(SecurityLog),
+    Security(Security),
     Recommendation(Recommendation),
     ServiceHealth(ServiceHealth),
     ResourceHealth(ResourceHealth),
@@ -94,7 +94,7 @@ pub struct Recommendation {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default, rename_all = "camelCase")]
 #[allow(unused)]
-pub struct SecurityLog {
+pub struct Security {
     #[serde(deserialize_with = "deserialize_event_source_security_log")]
     event_source: String,
 }
@@ -149,7 +149,7 @@ fn deserialize_event_source_security_log<'de, D>(deserializer: D) -> Result<Stri
 where
     D: Deserializer<'de>,
 {
-    deserialize_event_source_generic(deserializer, "SecurityLog")
+    deserialize_event_source_generic(deserializer, "Security")
 }
 
 fn deserialize_event_source_resource_health<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -255,6 +255,38 @@ mod tests {
         let sh: ServiceHealth = serde_json::from_str(buf).unwrap();
         println!("{:#?}", sh);
         assert_eq!(sh.event_source, "ServiceHealth");
+    }
+
+    // For now, at least, Security isn't fully implemented, but we should still get back a Security
+    // object.
+    #[test]
+    fn test_de_activity_log_security_log() {
+        let buf = r#"
+            {
+              "schemaId": "Microsoft.Insights/activityLogs",
+              "data": {
+                "status": "Activated",
+                "properties": {},
+                "context": {
+                  "activityLog": {
+                    "description": "Active: Virtual Machines - Australia East",
+                    "eventSource": "Security"
+                  }
+                }
+              }
+            }
+        "#;
+
+        // Can we deserialize at all?
+        let al: ActivityLog = serde_json::from_str(buf).unwrap();
+        println!("{:#?}", al);
+
+        // Did it end up as a Security log?
+        if let InnerActivityLog::Security(s) = al.data.context.activity_log {
+            assert_eq!(s.event_source, "Security");
+        } else {
+            panic!("Incorrect activity log type (not Security)");
+        }
     }
 
     #[test]

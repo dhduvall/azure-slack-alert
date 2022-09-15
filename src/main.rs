@@ -267,9 +267,10 @@ where
 #[instrument(skip(al))]
 // #[debug_handler]
 async fn handle_activity_log(al: &alerts::ActivityLog) -> Result<(StatusCode, String), HTTPError> {
-    match save_doc(al).await {
+    let doc_id = match save_doc(al).await {
         Ok(v) => {
             info!("saved activity log with document ID {}", v.inserted_id);
+            v.inserted_id.as_object_id().map(|oid| oid.to_hex())
         }
         Err(e) => {
             // Log the error (the full chain using the alternate selector), but it doesn't
@@ -283,24 +284,33 @@ async fn handle_activity_log(al: &alerts::ActivityLog) -> Result<(StatusCode, St
             error!("Failed to persist activity log: {e:#}");
             // Display a multi-line version with all the struct members.
             debug!("Failed to persist activity log: {e:#?}");
+            None
         }
+    };
+
+    // Yeah, great name.
+    enum MoDE {
+        Message(String),
+        DeferredError(HTTPError),
     }
 
     // Construct the message we send to Slack.
     // XXX We should continue if we couldn't parse the text as HTML, just putting the text
     // straight into the message.  But for now, just error out.
-    let msg = match &al.data.context.activity_log {
-        alerts::InnerActivityLog::ServiceHealth(_) => html::build_message(al).http_err_map(
-            StatusCode::BAD_REQUEST,
-            "Failed to parse communication as HTML".to_string(),
-        ),
-        alerts::InnerActivityLog::SecurityLog(_)
+    let thing = match &al.data.context.activity_log {
+        alerts::InnerActivityLog::ServiceHealth(_) => html::build_message(al)
+            .http_err_map(
+                StatusCode::BAD_REQUEST,
+                "Failed to parse communication as HTML".to_string(),
+            )
+            .map(MoDE::Message),
+        alerts::InnerActivityLog::Security(_)
         | alerts::InnerActivityLog::Recommendation(_)
         | alerts::InnerActivityLog::ResourceHealth(_)
-        | alerts::InnerActivityLog::Administrative(_) => Err(HTTPError::new(
+        | alerts::InnerActivityLog::Administrative(_) => Ok(MoDE::DeferredError(HTTPError::new(
             StatusCode::NOT_IMPLEMENTED,
             "activity log type not implemented".to_string(),
-        )),
+        ))),
         alerts::InnerActivityLog::Dummy => Err(HTTPError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Dummy event should never happen!".to_string(),
@@ -327,6 +337,20 @@ async fn handle_activity_log(al: &alerts::ActivityLog) -> Result<(StatusCode, St
         StatusCode::INTERNAL_SERVER_ERROR,
         "Couldn't find target user in environment variable SLACK_TARGET_USER".to_string(),
     )?;
+    let msg = match &thing {
+        MoDE::Message(x) => x.clone(),
+        MoDE::DeferredError(_) => match doc_id {
+            Some(x) => {
+                // I'd love to provide an Azure Portal link to the document, but AFAICT you can't
+                // link directly to it, even though you can query for it in the Cosmos DB API for
+                // MongoDB Data Explorer.
+                format!("Received an unimplemented activity log type.  See document ID {x}.")
+            }
+            None => {
+                "Received an unimplemented activity log type (failed to save document)".to_string()
+            }
+        },
+    };
     let content = SlackMessageContent::new().with_text(msg);
     let req = SlackApiChatPostMessageRequest::new(user_id.into(), content);
     let resp = slack_session.chat_post_message(&req).await.http_err_map(
@@ -334,15 +358,18 @@ async fn handle_activity_log(al: &alerts::ActivityLog) -> Result<(StatusCode, St
         "Failed to post message".to_string(),
     )?;
 
-    Ok((
-        StatusCode::OK,
-        format!(
-            // Obviously, don't do this for realz
-            "Got Service Health event, secret '{secret_name}' is 'LOLZ J/K'.\n\
-             Slack auth test response: {slack_auth_test:?}\n\
-             Slack post message response: {resp:#?}\n"
-        ),
-    ))
+    match thing {
+        MoDE::Message(_) => Ok((
+            StatusCode::OK,
+            format!(
+                // Obviously, don't do this for realz
+                "Got Service Health event, secret '{secret_name}' is 'LOLZ J/K'.\n\
+                 Slack auth test response: {slack_auth_test:?}\n\
+                 Slack post message response: {resp:#?}\n"
+            ),
+        )),
+        MoDE::DeferredError(err) => Err(err),
+    }
 }
 
 #[instrument(skip(doc))]
@@ -417,7 +444,7 @@ async fn keyvault_get_secret(secret_name: &str) -> Result<String, anyhow::Error>
 }
 
 #[instrument(skip(_ev))]
-async fn handle_security_log(_ev: &alerts::SecurityLog) -> impl IntoResponse {
+async fn handle_security_log(_ev: &alerts::Security) -> impl IntoResponse {
     (
         StatusCode::BAD_REQUEST,
         String::from("Got unexpected Security Log event"),
