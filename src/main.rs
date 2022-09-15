@@ -95,6 +95,9 @@ async fn main() {
 
     let app = Router::new()
         .route("/api/ServiceHealthAlert", get(do_get).post(do_post))
+        // When deployed, the function invocation URL seems to get lower-cased:
+        // https://github.com/MicrosoftDocs/azure-docs/issues/98464
+        .route("/api/servicehealthalert", get(do_get).post(do_post))
         .layer(tower_http::catch_panic::CatchPanicLayer::new())
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
