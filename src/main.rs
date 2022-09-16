@@ -127,7 +127,18 @@ async fn do_get(params: Option<Query<HashMap<String, String>>>) -> String {
 // https://docs.rs/axum/0.5.15/axum/response/index.html#returning-different-response-types
 #[instrument(skip(v))]
 #[debug_handler]
-async fn do_post(v: Result<Json<alerts::ActivityLog>, JsonRejection>) -> impl IntoResponse {
+async fn do_post(
+    v: Result<Json<alerts::ActivityLog>, JsonRejection>,
+    params: Option<Query<HashMap<String, String>>>,
+) -> impl IntoResponse {
+    let Query(params) = params.unwrap_or_default();
+    if let Some(collection_name) = params.get("collection") {
+        env::set_var("COSMOS_COLLECTION_NAME", collection_name);
+    }
+    if let Some(target) = params.get("target") {
+        env::set_var("SLACK_TARGET_USER", target);
+    }
+
     let resp = match v.http_err_map(StatusCode::BAD_REQUEST, "rejected JSON input".to_string()) {
         Ok(v) => handle_activity_log(&v).await,
         Err(e) => Err(e),
@@ -332,7 +343,6 @@ async fn handle_activity_log(al: &alerts::ActivityLog) -> Result<(StatusCode, St
         "Failed to perform an auth test connection to Slack".to_string(),
     )?;
 
-    // XXX Maybe this should come from a query parameter?
     let user_id = env::var("SLACK_TARGET_USER").http_err_map(
         StatusCode::INTERNAL_SERVER_ERROR,
         "Couldn't find target user in environment variable SLACK_TARGET_USER".to_string(),
