@@ -2,7 +2,7 @@ use crate::alerts;
 use anyhow::Error;
 use html_escape::decode_html_entities;
 use html_parser::{Dom, Element, Node};
-use tracing::{debug, trace};
+use tracing::{debug, instrument};
 
 #[derive(Debug)]
 struct State {
@@ -28,6 +28,7 @@ impl State {
 /// Given an event, extract the interesting portions and construct a message for Slack.
 // XXX Should this return text in appropriate markup?  Should this return some sort of block kit
 // type?
+#[instrument]
 pub fn build_message(al: &alerts::ActivityLog) -> Result<String, Error> {
     // The communication property is (probably?) the thing most likely to have paragraph-style
     // descriptive text.  It may be in HTML.
@@ -39,12 +40,11 @@ pub fn build_message(al: &alerts::ActivityLog) -> Result<String, Error> {
         }
     };
 
-    debug!("Constructed message: {:?}", buf);
     Ok(buf)
 }
 
+#[instrument]
 fn handle_html(html: &str) -> Result<String, Error> {
-    trace!("Parsing possible HTML: {:?}", html);
     let dom = Dom::parse(html)?;
 
     // XXX Seems to be a bug in the parser, which strips whitespace before and after text nodes.
@@ -61,6 +61,7 @@ fn handle_html(html: &str) -> Result<String, Error> {
     Ok(state.buf)
 }
 
+#[instrument]
 fn handle_elements(state: &mut State, elements: &Vec<Node>) {
     for node in elements {
         match node {
@@ -72,6 +73,7 @@ fn handle_elements(state: &mut State, elements: &Vec<Node>) {
     }
 }
 
+#[instrument]
 fn handle_element(state: &mut State, element: &Element) {
     let tag = element.name.to_lowercase();
     // Adding the current element to the chain makes getting the parent more verbose, but there's
@@ -97,6 +99,7 @@ fn handle_element(state: &mut State, element: &Element) {
 }
 
 /// Grab all the text nodes beneath this element, ignoring all markup.
+#[instrument]
 fn get_all_text(element: &Element) -> String {
     let mut buf = String::new();
     for node in &element.children {
@@ -107,6 +110,7 @@ fn get_all_text(element: &Element) -> String {
     buf
 }
 
+#[instrument]
 fn handle_p(state: &mut State, element: &Element) {
     state.add_text("\n");
     handle_elements(state, &element.children);
@@ -116,18 +120,21 @@ fn handle_p(state: &mut State, element: &Element) {
 }
 
 // Obviously, this and similar tags will only work if there's some whitespace surrounding them.
+#[instrument]
 fn handle_b(state: &mut State, element: &Element) {
     state.add_text("*");
     handle_elements(state, &element.children);
     state.add_text("*");
 }
 
+#[instrument]
 fn handle_i(state: &mut State, element: &Element) {
     state.add_text("_");
     handle_elements(state, &element.children);
     state.add_text("_");
 }
 
+#[instrument]
 fn handle_a(state: &mut State, element: &Element) {
     let link_text = get_all_text(element);
     // Why are values in the attributes HashMap Option(String)?
@@ -138,11 +145,13 @@ fn handle_a(state: &mut State, element: &Element) {
     }
 }
 
+#[instrument]
 fn handle_ul(state: &mut State, element: &Element) {
     handle_elements(state, &element.children);
     state.add_text("\n");
 }
 
+#[instrument]
 fn handle_li(state: &mut State, element: &Element) {
     let parent = state.element_chain.iter().rev().nth(1); // nth() is zero-based
 
