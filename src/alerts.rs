@@ -59,7 +59,7 @@ pub struct ServiceHealth {
     pub level: String, // Enum?
     pub operation_name: String,
     pub operation_id: Uuid,
-    status: String, // Enum?
+    pub status: String, // Enum?
     pub subscription_id: Uuid,
     pub properties: ServiceHealthProperties,
 }

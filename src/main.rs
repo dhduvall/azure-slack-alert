@@ -130,7 +130,7 @@ async fn do_get(params: Option<Query<HashMap<String, String>>>) -> String {
 async fn do_post(v: Result<Json<alerts::ActivityLog>, JsonRejection>) -> impl IntoResponse {
     let resp = match v.http_err_map(StatusCode::BAD_REQUEST, "rejected JSON input".to_string()) {
         Ok(v) => handle_activity_log(&v).await,
-        Err(e) => Err(e.into()),
+        Err(e) => Err(e),
     };
 
     match resp {
@@ -340,7 +340,7 @@ async fn handle_activity_log(al: &alerts::ActivityLog) -> Result<(StatusCode, St
     let msg = match &thing {
         MoDE::Message(x) => x.clone(),
         MoDE::DeferredError(_) => match doc_id {
-            Some(x) => {
+            Some(ref x) => {
                 // I'd love to provide an Azure Portal link to the document, but AFAICT you can't
                 // link directly to it, even though you can query for it in the Cosmos DB API for
                 // MongoDB Data Explorer.
@@ -351,7 +351,48 @@ async fn handle_activity_log(al: &alerts::ActivityLog) -> Result<(StatusCode, St
             }
         },
     };
-    let content = SlackMessageContent::new().with_text(msg);
+    let title = match &al.data.context.activity_log {
+        alerts::InnerActivityLog::ServiceHealth(sh) => sh.properties.title.as_ref(),
+        _ => "Unimplemented Activity Log Type",
+    };
+    let metadata_fields = match &al.data.context.activity_log {
+        alerts::InnerActivityLog::ServiceHealth(sh) => {
+            let doc_id = match doc_id {
+                Some(ref x) => x.clone(),
+                None => "unknown".to_string(),
+            };
+            Some(SlackSectionBlock::new().with_fields(vec![
+                md!("*Document ID:*\n{}", doc_id),
+                md!(
+                        "*Tracking ID:*\n<https://app.azure.com/h/{0}/{1}|{0}>",
+                        sh.properties.tracking_id,
+                        sh.subscription_id
+                            .simple()
+                            .to_string()
+                            .chars()
+                            .enumerate()
+                            .filter(|&(i, _)| !(4..32 - 4).contains(&i))
+                            .map(|(_, c)| c)
+                            .collect::<String>()
+                    ),
+                md!("*Correlation ID:*\n{}", sh.correlation_id),
+                md!("*Event Data ID:*\n{}", sh.event_data_id),
+                md!("*Operation ID:*\n{}", sh.operation_id),
+                md!("*Communication ID:*\n{}", sh.properties.communication_id),
+                md!("*Subscription ID:*\n{}", sh.subscription_id), // resolve to name
+                md!("*Event Timestamp:*\n{}", sh.event_timestamp),
+                md!("*Status:*\n{}", sh.status),
+                md!("*Stage:*\n{}", sh.properties.stage),
+            ]))
+        }
+        _ => None,
+    };
+    let content = SlackMessageContent::new().with_blocks(slack_blocks![
+        some_into(SlackHeaderBlock::new(pt!(title))),
+        optionally_into(metadata_fields.is_some() => metadata_fields.unwrap()),
+        some_into(SlackDividerBlock::new()),
+        some_into(SlackSectionBlock::new().with_text(md!(msg)))
+    ]);
     let req = SlackApiChatPostMessageRequest::new(user_id.into(), content);
     let resp = slack_session.chat_post_message(&req).await.http_err_map(
         StatusCode::INTERNAL_SERVER_ERROR,
