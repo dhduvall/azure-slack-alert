@@ -347,6 +347,7 @@ async fn handle_activity_log(al: &alerts::ActivityLog) -> Result<(StatusCode, St
         StatusCode::INTERNAL_SERVER_ERROR,
         "Couldn't find target user in environment variable SLACK_TARGET_USER".to_string(),
     )?;
+
     let msg = match &thing {
         MoDE::Message(x) => x.clone(),
         MoDE::DeferredError(_) => match doc_id {
@@ -361,10 +362,12 @@ async fn handle_activity_log(al: &alerts::ActivityLog) -> Result<(StatusCode, St
             }
         },
     };
+
     let title = match &al.data.context.activity_log {
         alerts::InnerActivityLog::ServiceHealth(sh) => sh.properties.title.as_ref(),
         _ => "Unimplemented Activity Log Type",
     };
+
     let metadata_fields = match &al.data.context.activity_log {
         alerts::InnerActivityLog::ServiceHealth(sh) => {
             let doc_id = match doc_id {
@@ -397,12 +400,31 @@ async fn handle_activity_log(al: &alerts::ActivityLog) -> Result<(StatusCode, St
         }
         _ => None,
     };
-    let content = SlackMessageContent::new().with_blocks(slack_blocks![
+
+    let mut blocks: Vec<SlackBlock> = slack_blocks![
         some_into(SlackHeaderBlock::new(pt!(title))),
         optionally_into(metadata_fields.is_some() => metadata_fields.unwrap()),
-        some_into(SlackDividerBlock::new()),
-        some_into(SlackSectionBlock::new().with_text(md!(msg)))
-    ]);
+        some_into(SlackDividerBlock::new())
+    ];
+
+    // Slack restricts text blocks to 3000 characters
+    blocks.extend(
+        split_text(&msg, 3000)
+            .into_iter()
+            .map(|block_text| SlackSectionBlock::new().with_text(md!(block_text)).into()),
+    );
+    debug!(
+        "Carved {}-character message up into {} blocks",
+        msg.len(),
+        blocks.len()
+    );
+
+    // Slack allows a maximum of 50 blocks
+    // XXX put the rest into threaded followup(s)
+    blocks = blocks.into_iter().take(50).collect();
+
+    let content = SlackMessageContent::new().with_blocks(blocks);
+
     let req = SlackApiChatPostMessageRequest::new(user_id.into(), content);
     let resp = slack_session.chat_post_message(&req).await.http_err_map(
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -421,6 +443,37 @@ async fn handle_activity_log(al: &alerts::ActivityLog) -> Result<(StatusCode, St
         )),
         MoDE::DeferredError(err) => Err(err),
     }
+}
+
+// Just put every paragraph into its own block.  Just hope and pray that none of the blocks turns
+// out bigger than 3000 characters (max_size).
+fn split_text_every_paragraph(text: &str, _: usize) -> Vec<&str> {
+    let mut blocks = Vec::new();
+    let mut last_pos = 0;
+    for (pos, _) in text.match_indices("\n\n") {
+        if let Some(block) = text.get(last_pos..pos) {
+            // This will elide paragraphs that are nothing but whitespace.  If that's not desired,
+            // then use trim_start_matches('\n').
+            let block = block.trim();
+            if !block.is_empty() {
+                blocks.push(block);
+            }
+            last_pos = pos + 2;
+        } else {
+            panic!("Couldn't get text between {last_pos} and {pos} (one of the two positions is a byte offset not on a character boundary).");
+        }
+    }
+    if let Some(block) = text.get(last_pos..) {
+        let block = block.trim();
+        if !block.is_empty() {
+            blocks.push(block);
+        }
+    }
+    blocks
+}
+
+fn split_text(text: &str, max_size: usize) -> Vec<&str> {
+    split_text_every_paragraph(text, max_size)
 }
 
 #[instrument(skip(doc))]
@@ -524,4 +577,157 @@ async fn handle_administrative(_ev: &alerts::Administrative) -> impl IntoRespons
         StatusCode::BAD_REQUEST,
         String::from("Got unexpected Administrative event"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indoc::indoc;
+
+    #[test]
+    fn test_split() {
+        let buf = indoc! {"
+            This is a line.
+
+            This is another line.
+        "};
+        let v = split_text(buf, 30);
+        assert_eq!(v.len(), 2, "buf is '{buf:?}'; v is '{v:?}'");
+    }
+
+    #[test]
+    fn test_split_par() {
+        let buf = indoc! {"
+            This is a line.
+
+            This is a new paragraph.
+        "};
+        // 30 puts us in the middle of the second paragraph:
+        //
+        // This is a line.\n\nThis is a new paragraph.
+        //           1           2         3         4
+        // 0123456789012345 6 789012345678901234567890
+        let v = split_text(buf, 30);
+        println!("buf is '{buf:?}'; v is '{v:?}'");
+        assert_eq!(v.len(), 2);
+    }
+
+    #[test]
+    fn test_split_par_2() {
+        let blocks = vec![
+            "This is a line.\nThis is another line.",
+            "This is a new paragraph.\nAnother second line.\n",
+        ];
+        let buf = blocks.join("\n\n");
+        // 50 puts us in the middle of the second paragraph, and the second paragraph is also under
+        // 50 characters:
+        // This is a line.\nThis is another line.\n\nThis is a new paragraph.\nAnother second line.
+        //           1          2         3           4         5         6          7         8
+        // 0123456789012345 6789012345678901234567 8 9012345678901234567890123 45678901234567890123
+        let v = split_text(&buf, 50);
+        println!("buf is '{buf:?}'\nv (len {}) is {v:?}", v.len());
+        assert_eq!(v.len(), blocks.len());
+        assert_eq!(v[0].trim(), blocks[0].trim());
+        assert_eq!(v[1].trim(), blocks[1].trim());
+    }
+
+    #[test]
+    fn test_split_par_oops() {
+        let buf = indoc! {"
+            This is a line.
+            This is another line.
+
+            This is a new paragraph.
+            Which also has a second line.
+        "};
+        // 30 puts us in the middle of the first paragraph:
+        // This is a line.\nThis is another line.\n\nThis is a new paragraph.\nWhich also has a second line.
+        //           1          2         3           4         5         6          7         8         9
+        // 0123456789012345 6789012345678901234567 8 9012345678901234567890123 45678901234567890123456789012
+        // XXX What should we actually do?
+        let v = split_text(buf, 50);
+        println!("buf is '{buf:?}'; v is '{v:?}'");
+        assert_eq!(v.len(), 2);
+    }
+
+    #[test]
+    fn test_split_par_3() {
+        let blocks = vec![
+            "This is a line.\nThis is another line.",
+            "This is a new paragraph.\nWhich also has a second line.",
+            "Let's try a third paragraph.\nJust in case.\n",
+        ];
+        let buf = blocks.join("\n\n");
+        // This is a line.\nThis is another line.\n\nThis is a new paragraph.\nWhich also has a second line.\n\nLet's try a third paragraph.\nFor now.\n
+        //           1          2         3           4         5         6          7         8         9          10        11        12         13
+        // 0123456789012345 6789012345678901234567 8 9012345678901234567890123 456789012345678901234567890123 4 56789012345678901234567890123 456789012
+        let v = split_text(&buf, 40);
+        println!("buf is '{buf:?}'\nv (len {}) is {v:?}", v.len());
+        assert_eq!(v.len(), blocks.len());
+        assert_eq!(v[0].trim(), blocks[0].trim());
+        assert_eq!(v[1].trim(), blocks[1].trim());
+        assert_eq!(v[2].trim(), blocks[2].trim());
+    }
+
+    #[test]
+    fn test_split_par_unicode() {
+        // XXX we need to find a test that might make the splitter think a paragraph is longer or
+        // shorter than it actually is.
+        let buf = indoc! {"
+            Þis is a line.
+            Þis is another line.
+
+            Þis is a new paragraph.
+            Which also has a second line.
+
+            Let's try a third paragraph.
+            Just in case.
+        "};
+        // Þis is a line.\nÞis is another line.\n\nÞis is a new paragraph.\nWhich also has a second line.\n\nWe need a third paragraph.\nFor now.\n
+        //          1         2         3          4         5         6          7         8         9          10        11        12
+        // 123456789012345 789012345678901234567 8 012345678901234567890123 456789012345678901234567890123 4 567890123456789012345678901 234567890
+        let v = split_text(buf, 40);
+        println!("buf is '{buf:?}'; v is '{v:?}'");
+        assert_eq!(v.len(), 3);
+    }
+
+    #[test]
+    // Make sure that three blank lines between two paragraphs results in two paragraphs.
+    fn test_split_three_blank_lines() {
+        let blocks = vec![
+            "This is a line.\nThis is another line.",
+            "This is a new paragraph.\nAfter three blank lines.\n",
+        ];
+        let buf = blocks.join("\n\n\n");
+        // 50 puts us in the middle of the second paragraph, and the second paragraph is also under
+        // 50 characters:
+        // This is a line.\nThis is another line.\n\nThis is a new paragraph.\nAnother second line.
+        //           1          2         3           4         5         6          7         8
+        // 0123456789012345 6789012345678901234567 8 9012345678901234567890123 45678901234567890123
+        let v = split_text(&buf, 50);
+        println!("buf is '{buf:?}'\nv (len {}) is {v:?}", v.len());
+        assert_eq!(v.len(), blocks.len());
+        assert_eq!(v[0].trim(), blocks[0].trim());
+        assert_eq!(v[1].trim(), blocks[1].trim());
+    }
+
+    #[test]
+    // Make sure that four blank lines between two paragraphs results in two paragraphs.
+    fn test_split_four_blank_lines() {
+        let blocks = vec![
+            "This is a line.\nThis is another line.",
+            "This is a new paragraph.\nAfter four blank lines.\n",
+        ];
+        let buf = blocks.join("\n\n\n\n");
+        // 50 puts us in the middle of the second paragraph, and the second paragraph is also under
+        // 50 characters:
+        // This is a line.\nThis is another line.\n\nThis is a new paragraph.\nAnother second line.
+        //           1          2         3           4         5         6          7         8
+        // 0123456789012345 6789012345678901234567 8 9012345678901234567890123 45678901234567890123
+        let v = split_text(&buf, 50);
+        println!("buf is '{buf:?}'\nv (len {}) is {v:?}", v.len());
+        assert_eq!(v.len(), blocks.len());
+        assert_eq!(v[0].trim(), blocks[0].trim());
+        assert_eq!(v[1].trim(), blocks[1].trim());
+    }
 }
