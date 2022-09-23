@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{self, Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::str::FromStr;
 use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -50,16 +51,20 @@ pub enum InnerActivityLog {
 #[allow(unused)]
 pub struct ServiceHealth {
     pub channels: String, // Enum?
+    #[serde(deserialize_with = "deserialize_uuid_base64")]
     pub correlation_id: Uuid,
     pub description: String,
     #[serde(deserialize_with = "deserialize_event_source_service_health")]
     pub event_source: String, // must be "ServiceHealth"
     pub event_timestamp: DateTime<Utc>,
+    #[serde(deserialize_with = "deserialize_uuid_base64")]
     pub event_data_id: Uuid,
     pub level: String, // Enum?
     pub operation_name: String,
+    #[serde(deserialize_with = "deserialize_uuid_base64")]
     pub operation_id: Uuid,
     pub status: String, // Enum?
+    #[serde(deserialize_with = "deserialize_uuid_base64")]
     pub subscription_id: Uuid,
     pub properties: ServiceHealthProperties,
 }
@@ -113,6 +118,30 @@ pub struct ResourceHealth {
 pub struct Administrative {
     #[serde(deserialize_with = "deserialize_event_source_administrative")]
     event_source: String,
+}
+
+/// Try to deserialize a UUID first, and if that fails, try base64-decoding and then converting to
+/// a UUID.  This assumes that the input is deserializable as a String.  This is useful when
+/// pulling documents out of MongoDB, which will have serialized the UUID byte blob as base64.
+fn deserialize_uuid_base64<'de, D>(deserializer: D) -> Result<Uuid, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    // If we can't decode from a string, then something's wrong.
+    let s = String::deserialize(deserializer)?;
+
+    // If Uuid can make sense of that, great.
+    if let Ok(uu) = Uuid::from_str(s.as_ref()) {
+        return Ok(uu);
+    }
+
+    // Otherwise, try to base64-decode.
+    let uuid_bytes = base64::decode(s).map_err(Error::custom)?;
+
+    // Convert the resulting Vec<u8> to &[u8] and see if that's a UUID.
+    Uuid::from_slice(uuid_bytes.as_slice()).map_err(Error::custom)
 }
 
 fn deserialize_event_source_generic<'de, D>(
@@ -298,5 +327,20 @@ mod tests {
         }"#;
 
         let _sh: ServiceHealth = serde_json::from_str(buf).unwrap();
+    }
+
+    #[test]
+    fn test_base64_uuid() {
+        let buf = r#"{
+            "eventSource": "ServiceHealth",
+            "correlationId": "u6yUT93AS0yqhcx9xdXBpg=="
+        }"#;
+
+        let sh: ServiceHealth = serde_json::from_str(buf).unwrap();
+        assert_eq!(sh.event_source, "ServiceHealth");
+        assert_eq!(
+            sh.correlation_id,
+            Uuid::from_str("bbac944f-ddc0-4b4c-aa85-cc7dc5d5c1a6").unwrap()
+        );
     }
 }

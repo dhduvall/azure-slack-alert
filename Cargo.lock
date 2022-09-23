@@ -757,6 +757,7 @@ dependencies = [
  "axum-macros",
  "azure_identity",
  "azure_security_keyvault",
+ "base64",
  "chrono",
  "html-escape",
  "html_parser",
