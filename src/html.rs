@@ -8,8 +8,11 @@ use tracing::{debug, instrument};
 struct State {
     /// String containing the mrkdwn text.
     buf: String,
-    /// Vec of element names from the top of the tree down to where we are.
+    /// Vec of element names from the top of the tree down to where we are.  This includes the
+    /// current element; the parent is the penultimate element in the Vec.
     element_chain: Vec<String>,
+    /// How far in to an ordered list we are.
+    ol_count: Option<usize>,
 }
 
 impl State {
@@ -17,6 +20,7 @@ impl State {
         State {
             buf: String::with_capacity(capacity),
             element_chain: Vec::new(),
+            ol_count: None,
         }
     }
 
@@ -148,6 +152,7 @@ fn handle_a(state: &mut State, element: &Element) {
 #[instrument]
 fn handle_ul(state: &mut State, element: &Element) {
     handle_elements(state, &element.children);
+    state.ol_count = None;
     state.add_text("\n");
 }
 
@@ -155,17 +160,17 @@ fn handle_ul(state: &mut State, element: &Element) {
 fn handle_li(state: &mut State, element: &Element) {
     let parent = state.element_chain.iter().rev().nth(1); // nth() is zero-based
 
-    // We can't do proper lists unless we use the block kit; while "*" and "1." convert to bullets
-    // and increasing numbers when typing into the app, they don't have that behavior here.  So we
-    // use an explicit bullet (0x2022) for unordered lists.  We'd have to keep track of previous
-    // siblings in order to manage the count, though.
     let marker = match parent {
         Some(tag) => match tag.as_str() {
-            "ul" => "•",
-            "ol" => "1.",
-            _ => "•",
+            "ul" => "•".to_string(),
+            "ol" => {
+                let num = state.ol_count.get_or_insert(0);
+                *num += 1;
+                format!("{num}.")
+            }
+            _ => "•".to_string(),
         },
-        None => "•",
+        None => "•".to_string(),
     };
     state.add_text(&format!("\n{marker} "));
     handle_elements(state, &element.children);
@@ -188,11 +193,11 @@ mod tests {
     #[test]
     fn test_ordered_list() {
         let html = r#"
-        <ol><li>one</li><li>two</li></ol>
+        <ol><li>one</li><li>two</li><li>three</li><li>four</li></ol>
         "#;
 
         let res = handle_html(html).unwrap();
-        assert_eq!(res, "\n1. one\n1. two\n");
+        assert_eq!(res, "\n1. one\n2. two\n3. three\n4. four\n");
     }
 
     #[test]
@@ -216,5 +221,26 @@ mod tests {
 
         let res = handle_html(html).unwrap();
         assert_eq!(res, "Words. *Bold words.* More words.");
+    }
+
+    #[test]
+    // Do lists work without a preceding paragraph break?
+    fn test_list_after_text() {
+        let html = r#"
+        Words.<ul><li>one</li><li>two</li></ul>
+        "#;
+
+        let res = handle_html(html).unwrap();
+        assert_eq!(res, "Words.\n• one\n• two\n");
+    }
+
+    #[test]
+    fn test_list_before_text() {
+        let html = r#"
+        <ul><li>one</li><li>two</li></ul>Words.
+        "#;
+
+        let res = handle_html(html).unwrap();
+        assert_eq!(res, "\n• one\n• two\nWords.");
     }
 }
