@@ -91,6 +91,12 @@ fn init_logger() {
 #[tokio::main]
 #[instrument]
 async fn main() {
+    let args = env::args().collect::<Vec<_>>();
+    if args.len() > 1 {
+        debug_parse_file(&args[1]);
+        return;
+    }
+
     init_logger();
 
     let app = Router::new()
@@ -110,6 +116,37 @@ async fn main() {
         .serve(app.into_make_service())
         .await
         .unwrap();
+}
+
+fn debug_parse_file(filename: &String) {
+    let path = std::path::Path::new(&filename);
+    let f = std::fs::File::open(path).unwrap();
+
+    let alert: alerts::ActivityLog = serde_json::from_reader(f).unwrap();
+    let md_text = match &alert.data.context.activity_log {
+        alerts::InnerActivityLog::ServiceHealth(sh_alert) => {
+            print!("HTML input\n{}\n", &sh_alert.properties.communication);
+            html::build_message(&alert)
+        }
+        _ => todo!(),
+    }
+    .unwrap();
+    println!("\nText has {} characters", md_text.len());
+    println!("\n{}", md_text);
+
+    let mut blocks: Vec<SlackBlock> = vec![];
+    // slack_blocks![
+    //     some_into(SlackHeaderBlock::new(pt!(title))),
+    //     optionally_into(metadata_fields.is_some() => metadata_fields.unwrap()),
+    //     some_into(SlackDividerBlock::new())
+    // ];
+
+    blocks.extend(
+        split_text(&md_text, 3000)
+            .into_iter()
+            .map(|block_text| SlackSectionBlock::new().with_text(md!(block_text)).into()),
+    );
+    println!("\n{:#?}", blocks);
 }
 
 #[instrument]
@@ -300,6 +337,7 @@ async fn handle_activity_log(al: &alerts::ActivityLog) -> Result<(StatusCode, St
     };
 
     // Yeah, great name.
+    /// Message or Deferred Error.
     enum MoDE {
         Message(String),
         DeferredError(HTTPError),
@@ -374,6 +412,7 @@ async fn handle_activity_log(al: &alerts::ActivityLog) -> Result<(StatusCode, St
                 Some(ref x) => x.clone(),
                 None => "unknown".to_string(),
             };
+            // See if we can make these Context blocks.
             Some(SlackSectionBlock::new().with_fields(vec![
                 md!("*Document ID:*\n{}", doc_id),
                 md!(
