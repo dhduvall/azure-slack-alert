@@ -87,8 +87,11 @@ fn handle_element(state: &mut State, element: &Element) {
     // XXX a macro could make this nicer
     match tag.as_str() {
         "p" => handle_p(state, element),
+        "br" => handle_br(state, element),
         "b" | "strong" => handle_b(state, element),
         "i" | "em" | "u" => handle_i(state, element),
+        "code" | "tt" => handle_code(state, element),
+        "strike" | "del" | "s" => handle_strike(state, element),
         "a" => handle_a(state, element),
         "ul" | "ol" => handle_ul(state, element),
         "li" => handle_li(state, element),
@@ -123,23 +126,53 @@ fn handle_p(state: &mut State, element: &Element) {
     state.add_text("\n");
 }
 
-// Obviously, this and similar tags will only work if there's some whitespace surrounding them.
+#[instrument]
+fn handle_br(state: &mut State, element: &Element) {
+    state.add_text("\n");
+}
+
 #[instrument]
 fn handle_b(state: &mut State, element: &Element) {
-    state.add_text("*");
-    handle_elements(state, &element.children);
-    state.add_text("*");
+    handle_fontattr(state, element, "*");
 }
 
 #[instrument]
 fn handle_i(state: &mut State, element: &Element) {
-    state.add_text("_");
+    handle_fontattr(state, element, "_");
+}
+
+#[instrument]
+fn handle_code(state: &mut State, element: &Element) {
+    handle_fontattr(state, element, "`");
+}
+
+#[instrument]
+fn handle_strike(state: &mut State, element: &Element) {
+    handle_fontattr(state, element, "~");
+}
+
+// These tags will only work if there's some whitespace surrounding them.  Since we can't count on
+// the HTML to have them, we have to add spaces regardless.
+#[instrument]
+fn handle_fontattr(state: &mut State, element: &Element, c: &str) {
+    // The leading space should only be added if the buffer doesn't already end in a whitespace.
+    // The pattern API which would make that simplest isn't stable yet, so we just check for the
+    // most likely whitespace characters: space and newline.
+    // This also works around the bug noted in handle_html().
+    if !state.buf.ends_with(" ") && !state.buf.ends_with("\n") {
+        state.add_text(" ");
+    }
+    state.add_text(c);
     handle_elements(state, &element.children);
-    state.add_text("_");
+    state.add_text(c);
+    state.add_text(" ");
 }
 
 #[instrument]
 fn handle_a(state: &mut State, element: &Element) {
+    // Some of the URLs we get are super long (2265 in front of me); might have to investigate a
+    // URL shortener.
+    // https://learn.microsoft.com/en-us/shows/azure-friday/azurlshortener-an-open-source-budget-friendly-url-shortener
     let link_text = get_all_text(element);
     // Why are values in the attributes HashMap Option(String)?
     if let Some(Some(href)) = element.attributes.get("href") {
@@ -213,7 +246,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn test_space_before_b() {
         let html = r#"
         Words. <b>Bold words.</b> More words.
@@ -221,6 +253,18 @@ mod tests {
 
         let res = handle_html(html).unwrap();
         assert_eq!(res, "Words. *Bold words.* More words.");
+    }
+
+    #[test]
+    fn test_newline_before_b() {
+        let html = r#"
+        Words.<p><b>Bold words.</b></p>More words.
+        "#;
+
+        let res = handle_html(html).unwrap();
+        // Ideally, that space between the bold and the newline wouldn't be there, but it's
+        // innocuous (I think).
+        assert_eq!(res, "Words.\n*Bold words.* \nMore words.");
     }
 
     #[test]
@@ -243,4 +287,8 @@ mod tests {
         let res = handle_html(html).unwrap();
         assert_eq!(res, "\n• one\n• two\nWords.");
     }
+
+    // This came out with the href printed instead of the <a> content.
+    // doc ID 636022ba5b81183fc407fa00
+    // <p>To avoid potential service disruptions,&nbsp;<strong>follow&nbsp;</strong><a href="https://learn.microsoft.com/azure/postgresql/single-server/concepts-certificate-rotation#do-i-need-to-make-any-changes-on-my-client-to-maintain-connectivity" rel="noopener noreferrer" target="_blank" style="color: rgb(0, 114, 198)"><strong>these instructions</strong></a><strong>&nbsp;to check if your apps will be affected</strong>. If they'll be affected, continue to follow the instructions to add DigiCert Global Root G2 and intermediate certificate authorities to your trusted root store for Azure Database for PostgreSQL Single Server by 30 November 2022.</p>
 }
