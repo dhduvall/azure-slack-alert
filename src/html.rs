@@ -178,7 +178,7 @@ fn handle_a(state: &mut State, element: &Element) {
     if let Some(Some(href)) = element.attributes.get("href") {
         state.add_text(&format!("<{href}|{link_text}>"));
     } else {
-        state.add_text("[missing link] {link_text}");
+        state.add_text(&format!("[missing link] {link_text}"));
     }
 }
 
@@ -286,6 +286,14 @@ mod tests {
 
         let res = handle_html(html).unwrap();
         assert_eq!(res, "\n• one\n• two\nWords.");
+    }
+
+    #[test]
+    fn test_missing_a_href() {
+        let html = r#"blah <a>text</a> blah"#;
+        let res = handle_html(html).unwrap();
+        // Missing spaces should be restored once that parser bug is fixed.
+        assert_eq!(res, "blah[missing link] textblah");
     }
 
     // This came out with the href printed instead of the <a> content.
