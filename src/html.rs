@@ -110,8 +110,10 @@ fn handle_element(state: &mut State, element: &Element) {
 fn get_all_text(element: &Element) -> String {
     let mut buf = String::new();
     for node in &element.children {
-        if let Node::Text(text) = node {
-            buf.push_str(&decode_html_entities(&text));
+        match node {
+            Node::Text(text) => buf.push_str(&decode_html_entities(&text)),
+            Node::Element(element) => buf.push_str(&get_all_text(&element)),
+            Node::Comment(_) => (),
         }
     }
     buf
@@ -165,6 +167,9 @@ fn handle_fontattr(state: &mut State, element: &Element, c: &str) {
     state.add_text(c);
     handle_elements(state, &element.children);
     state.add_text(c);
+    // Slack doesn't understand having bold change in the middle of a word (*this is not bo*ld),
+    // but it does handle trailing punctuation correctly (*this is bold*.).  In that case, we
+    // shouldn't add the trailing space.  But.  This bug.
     state.add_text(" ");
 }
 
@@ -173,6 +178,9 @@ fn handle_a(state: &mut State, element: &Element) {
     // Some of the URLs we get are super long (2265 in front of me); might have to investigate a
     // URL shortener.
     // https://learn.microsoft.com/en-us/shows/azure-friday/azurlshortener-an-open-source-budget-friendly-url-shortener
+    // What should we do when the <a> content has markup in it?  get_all_text() grabs just the
+    // text.  Slack doesn't let you do markup inside the link text, but we could conceivably
+    // extract all markup that applied to the entire contents and put it outside.
     let link_text = get_all_text(element);
     // Why are values in the attributes HashMap Option(String)?
     if let Some(Some(href)) = element.attributes.get("href") {
@@ -296,7 +304,64 @@ mod tests {
         assert_eq!(res, "blah[missing link] textblah");
     }
 
-    // This came out with the href printed instead of the <a> content.
+    // This came out with the href printed instead of the <a> content.  Because the content is
+    // missing entirely.  If we remove the <strong> from inside, it works.
     // doc ID 636022ba5b81183fc407fa00
-    // <p>To avoid potential service disruptions,&nbsp;<strong>follow&nbsp;</strong><a href="https://learn.microsoft.com/azure/postgresql/single-server/concepts-certificate-rotation#do-i-need-to-make-any-changes-on-my-client-to-maintain-connectivity" rel="noopener noreferrer" target="_blank" style="color: rgb(0, 114, 198)"><strong>these instructions</strong></a><strong>&nbsp;to check if your apps will be affected</strong>. If they'll be affected, continue to follow the instructions to add DigiCert Global Root G2 and intermediate certificate authorities to your trusted root store for Azure Database for PostgreSQL Single Server by 30 November 2022.</p>
+    #[test]
+    fn test_missing_a_content() {
+        let html = r#"To avoid potential service disruptions, <strong>follow </strong><a href="https://url.com"><strong>these instructions</strong></a><strong> to check if your apps will be affected</strong> blah."#;
+        let res = handle_html(html).unwrap();
+        assert_eq!(
+            res,
+            "To avoid potential service disruptions, *follow* <https://url.com|these instructions> *to check if your apps will be affected* blah."
+        );
+    }
+
+    #[test]
+    fn test_get_all_text() {
+        let html = r#"<strong>this is the text</strong>"#;
+        let dom = Dom::parse(html).unwrap();
+        assert_eq!(dom.children.len(), 1);
+        let elem = match &dom.children[0] {
+            Node::Element(e) => e,
+            _ => panic!("Wrong Node type!"),
+        };
+        let text = get_all_text(&elem);
+        assert_eq!(text, "this is the text");
+
+        // Nested
+        let html = r#"<em><strong>this is the text</strong></em>"#;
+        let dom = Dom::parse(html).unwrap();
+        assert_eq!(dom.children.len(), 1);
+        let elem = match &dom.children[0] {
+            Node::Element(e) => e,
+            _ => panic!("Wrong Node type!"),
+        };
+        let text = get_all_text(&elem);
+        assert_eq!(text, "this is the text");
+
+        // Nested twice
+        let html = r#"<em><strong><i>this is the text</i></strong></em>"#;
+        let dom = Dom::parse(html).unwrap();
+        assert_eq!(dom.children.len(), 1);
+        let elem = match &dom.children[0] {
+            Node::Element(e) => e,
+            _ => panic!("Wrong Node type!"),
+        };
+        let text = get_all_text(&elem);
+        assert_eq!(text, "this is the text");
+
+        // Nested and mixed
+        let html = r#"<em><strong><i>this is</i></strong> <b>the text</b></em>"#;
+        let dom = Dom::parse(html).unwrap();
+        assert_eq!(dom.children.len(), 1);
+        let elem = match &dom.children[0] {
+            Node::Element(e) => e,
+            _ => panic!("Wrong Node type!"),
+        };
+        let text = get_all_text(&elem);
+        // XXX space missing because we're not calling the workaround to the whitespace bug in this
+        // stack.
+        assert_eq!(text, "this isthe text");
+    }
 }
