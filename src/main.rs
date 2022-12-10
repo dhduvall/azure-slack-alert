@@ -53,6 +53,7 @@ fn init_logger() {
     if atty::is(atty::Stream::Stdin) {
         tracing_subscriber::fmt::init();
     } else {
+        // XXX Can we log to datadog, too?  The Azure console is awful.
         // This duplicates the code in tracing_subscriber::fmt::try_init().  See
         // https://github.com/tokio-rs/tracing/issues/1329 and
         // https://github.com/tokio-rs/tracing/issues/2217
@@ -453,22 +454,30 @@ async fn handle_activity_log(al: &alerts::ActivityLog) -> Result<(StatusCode, St
             .map(|block_text| SlackSectionBlock::new().with_text(md!(block_text)).into()),
     );
     debug!(
-        "Carved {}-character message up into {} blocks",
+        "Carved {}-character message up into {} blocks: {:?}",
         msg.len(),
-        blocks.len()
+        blocks.len(),
+        "what"
     );
 
     // Slack allows a maximum of 50 blocks
     // XXX put the rest into threaded followup(s)
     blocks = blocks.into_iter().take(50).collect();
 
-    let content = SlackMessageContent::new().with_blocks(blocks);
+    let content = SlackMessageContent::new().with_blocks(blocks.clone());
 
     let req = SlackApiChatPostMessageRequest::new(user_id.into(), content);
-    let resp = slack_session.chat_post_message(&req).await.http_err_map(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Failed to post message".to_string(),
-    )?;
+    let resp = slack_session
+        .chat_post_message(&req)
+        .await
+        .map_err(|e| {
+            debug!("Failed to post message.  Block dump: {:?}", &blocks);
+            e
+        })
+        .http_err_map(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to post message".to_string(),
+        )?;
 
     match thing {
         MoDE::Message(_) => Ok((
@@ -484,35 +493,171 @@ async fn handle_activity_log(al: &alerts::ActivityLog) -> Result<(StatusCode, St
     }
 }
 
+// Try to put as many paragraphs into a block as we can.
+// Could we do this by using split_text_every_paragraph() and then combining the resulting blocks
+// if they're small enough?
+#[allow(dead_code)]
+fn split_text_fancy(text: &str, max_size: usize) -> Vec<&str> {
+    let mut blocks = Vec::new();
+    let mut block_begin = 0;
+    let mut last_pos = 0;
+
+    /*
+    let mut do_one_block = |last_pos, pos| {
+        println!(
+            "do_one_block with last_pos = {last_pos}, pos = {pos}, and block_begin = {block_begin}"
+        );
+        if pos - block_begin > max_size {
+            if let Some(block) = text.get(block_begin..last_pos) {
+                println!("New block between {block_begin} and {last_pos}");
+                blocks.push(block);
+                block_begin = pos + 2;
+            } else {
+                // We shouldn't ever get here, since pos should always be on a newline character
+                // and block_begin should always be on the first byte of whatever follows a newline
+                // character.  The message should include the text surrounding pos, but I think if
+                // we had a good way of doing that, we'd simply use it to not be in this position
+                // in the first place.
+                panic!("Couldn't get text between {block_begin} and {pos} (one of the two positions is a byte offset not on a character boundary).");
+            }
+        }
+    };
+    */
+
+    for (pos, _) in text.match_indices("\n\n") {
+        println!(
+            "loop iter with last_pos = {last_pos}, pos = {pos}, and block_begin = {block_begin}"
+        );
+        if pos - block_begin > max_size {
+            if let Some(block) = text.get(block_begin..last_pos) {
+                println!(
+                    "New block between {block_begin} and {last_pos}: {} chars",
+                    block.len()
+                );
+                blocks.push(block);
+                block_begin = pos + 2;
+                last_pos = block_begin;
+            } else {
+                // We shouldn't ever get here, since pos should always be on a newline character
+                // and block_begin should always be on the first byte of whatever follows a newline
+                // character.  The other possibility is that block_begin > last_pos, which is also
+                // a programming logic error.  The message should include the text surrounding pos,
+                // but I think if we had a good way of doing that, we'd simply use it to not be in
+                // this position in the first place.
+                panic!("Couldn't get text between {block_begin} and {pos} (one of the two positions is a byte offset not on a character boundary).");
+            }
+        } else {
+            last_pos = pos;
+        }
+    }
+
+    println!("out of loop with last_pos = {last_pos} and block_begin = {block_begin}");
+    if last_pos > block_begin {
+        if let Some(block) = text.get(block_begin..last_pos) {
+            println!(
+                "New block between {block_begin} and {last_pos}: {} chars",
+                block.len()
+            );
+            blocks.push(block);
+            block_begin = last_pos + 2;
+        }
+    }
+
+    if let Some(block) = text.get(block_begin..) {
+        println!(
+            "Last block between {block_begin} and END: {} chars",
+            block.len()
+        );
+        blocks.push(block);
+    }
+
+    blocks
+}
+
+fn process_block<'a>(text: &'a str, maxlen: usize, outvec: &mut Vec<&'a str>) {
+    // This will elide paragraphs that are nothing but whitespace.  If that's not desired, then use
+    // trim_start_matches('\n').
+    let text = text.trim();
+
+    println!("Block {} len {}", outvec.len(), text.len());
+
+    if text.len() <= maxlen {
+        outvec.push(text);
+        return;
+    }
+
+    println!("Block {} is too big! (> {})", outvec.len(), maxlen);
+    // XXX Need to figure out a way to prevent infinite recursion!
+    let retry = split_text_every_linebreak(text, maxlen);
+    outvec.extend(retry.iter());
+}
+
 // Just put every paragraph into its own block.  Just hope and pray that none of the blocks turns
 // out bigger than 3000 characters (max_size).
-fn split_text_every_paragraph(text: &str, _: usize) -> Vec<&str> {
+fn split_text_every_paragraph(text: &str, maxlen: usize) -> Vec<&str> {
     let mut blocks = Vec::new();
     let mut last_pos = 0;
     for (pos, _) in text.match_indices("\n\n") {
         if let Some(block) = text.get(last_pos..pos) {
-            // This will elide paragraphs that are nothing but whitespace.  If that's not desired,
-            // then use trim_start_matches('\n').
-            let block = block.trim();
-            if !block.is_empty() {
-                blocks.push(block);
-            }
+            process_block(block, maxlen, &mut blocks);
             last_pos = pos + 2;
         } else {
             panic!("Couldn't get text between {last_pos} and {pos} (one of the two positions is a byte offset not on a character boundary).");
         }
     }
     if let Some(block) = text.get(last_pos..) {
-        let block = block.trim();
-        if !block.is_empty() {
-            blocks.push(block);
+        process_block(block, maxlen, &mut blocks);
+    }
+
+    println!("{:#?}", blocks);
+    blocks
+}
+
+fn split_text_every_linebreak(text: &str, maxlen: usize) -> Vec<&str> {
+    let mut blocks = Vec::new();
+    let mut last_pos = 0;
+    for (pos, _) in text.match_indices("\n") {
+        if let Some(block) = text.get(last_pos..pos) {
+            process_block(block, maxlen, &mut blocks);
+            last_pos = pos + 2;
+        } else {
+            panic!("Couldn't get text between {last_pos} and {pos} (one of the two positions is a byte offset not on a character boundary).");
         }
     }
+    if let Some(block) = text.get(last_pos..) {
+        process_block(block, maxlen, &mut blocks);
+    }
+
+    println!("{:#?}", blocks);
     blocks
 }
 
 fn split_text(text: &str, max_size: usize) -> Vec<&str> {
     split_text_every_paragraph(text, max_size)
+}
+
+#[allow(dead_code)]
+fn split_text_paragraphs(text: &str, max_size: usize) -> Vec<String> {
+    // This is really allocaty, but it's simple.
+    let mut v: Vec<String> = Vec::new();
+    for line in text.split("\n\n") {
+        // Push the line onto the top element of v unless that would cause that element to exceed
+        // 3000 characters (that's what Slack tells us; it doesn't clarify that it's not graphemes
+        // or bytes) in length; then push the line into a new element.
+        //
+        // If we're left with a paragraph that's already over the max, we should try splitting it
+        // by line.
+        if let Some(last) = v.last_mut() {
+            if last.chars().count() + line.chars().count() > max_size {
+                v.push(line.to_string());
+            } else {
+                last.push_str(line);
+            }
+        } else {
+            v.push(line.to_string());
+        }
+    }
+    v
 }
 
 #[instrument(skip(doc))]
