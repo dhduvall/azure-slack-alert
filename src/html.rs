@@ -1,11 +1,11 @@
 use crate::alerts;
 use anyhow::Error;
 use html_escape::decode_html_entities;
-use html_parser::{Dom, Element, Node};
+use tl;
 use tracing::{debug, instrument};
 
 #[derive(Debug)]
-struct State {
+struct State<'a> {
     /// String containing the mrkdwn text.
     buf: String,
     /// Vec of element names from the top of the tree down to where we are.  This includes the
@@ -13,14 +13,16 @@ struct State {
     element_chain: Vec<String>,
     /// How far in to an ordered list we are.
     ol_count: Option<usize>,
+    parser: &'a tl::Parser<'a>,
 }
 
-impl State {
-    fn new(capacity: usize) -> Self {
+impl<'a> State<'a> {
+    fn new(parser: &tl::Parser, capacity: usize) -> Self {
         State {
             buf: String::with_capacity(capacity),
             element_chain: Vec::new(),
             ol_count: None,
+            parser: parser,
         }
     }
 
@@ -49,37 +51,35 @@ pub fn build_message(al: &alerts::ActivityLog) -> Result<String, Error> {
 
 #[instrument]
 fn handle_html(html: &str) -> Result<String, Error> {
-    let dom = Dom::parse(html)?;
+    let dom = tl::parse(html, tl::ParserOptions::default())?;
 
     // XXX Seems to be a bug in the parser, which strips whitespace before and after text nodes.
     // https://github.com/mathiversen/html-parser/issues/22
 
-    if !dom.errors.is_empty() {
-        debug!("Non-fatal errors during parsing: {:?}", dom.errors);
-    }
+    let mut state = State::new(dom.parser(), html.len());
 
-    let mut state = State::new(html.len());
-
-    handle_elements(&mut state, &dom.children);
+    handle_elements(&mut state, dom.children());
 
     Ok(state.buf)
 }
 
 #[instrument]
-fn handle_elements(state: &mut State, elements: &Vec<Node>) {
-    for node in elements {
-        match node {
-            // XXX we actually need to convert <, >, and & back to HTML entities.
-            Node::Text(text) => state.add_text(&decode_html_entities(&text)),
-            Node::Element(element) => handle_element(state, element),
-            Node::Comment(_) => (),
+fn handle_elements(state: &mut State, elements: &[tl::NodeHandle]) {
+    for node_handle in elements {
+        if let Some(node) = node_handle.get(state.parser) {
+            match node {
+                // XXX we actually need to convert <, >, and & back to HTML entities.
+                tl::Node::Raw(text) => state.add_text(&decode_html_entities(&text)),
+                tl::Node::Tag(element) => handle_element(state, element),
+                tl::Node::Comment(_) => (),
+            }
         }
     }
 }
 
 #[instrument]
-fn handle_element(state: &mut State, element: &Element) {
-    let tag = element.name.to_lowercase();
+fn handle_element(state: &mut State, element: &tl::HTMLTag) {
+    let tag = element.name().as_utf8_str().to_lowercase();
     // Adding the current element to the chain makes getting the parent more verbose, but there's
     // no good place to put it so that you can just use .last() without making it very repetitive.
     state.element_chain.push(tag.clone());
@@ -99,7 +99,8 @@ fn handle_element(state: &mut State, element: &Element) {
         // their children.
         // XXX We could have a debugging version that emitted representations of the start and end
         // tags.
-        _ => handle_elements(state, &element.children),
+        // XXX HTMLTag.children() has a different type than VDom.children()?  OMG.
+        _ => handle_elements(state, element.children()),
     }
 
     state.element_chain.pop();
@@ -107,20 +108,22 @@ fn handle_element(state: &mut State, element: &Element) {
 
 /// Grab all the text nodes beneath this element, ignoring all markup.
 #[instrument]
-fn get_all_text(element: &Element) -> String {
+fn get_all_text(state: &State, element: &tl::HTMLTag) -> String {
     let mut buf = String::new();
-    for node in &element.children {
-        match node {
-            Node::Text(text) => buf.push_str(&decode_html_entities(&text)),
-            Node::Element(element) => buf.push_str(&get_all_text(&element)),
-            Node::Comment(_) => (),
+    for node_handle in element.children() {
+        if let Some(node) = node_handle.get(state.parser) {
+            match node {
+                tl::Node::Raw(text) => buf.push_str(&decode_html_entities(&text)),
+                tl::Node::HTMLTag(element) => buf.push_str(&get_all_text(state, &element)),
+                tl::Node::Comment(_) => (),
+            }
         }
     }
     buf
 }
 
 #[instrument]
-fn handle_p(state: &mut State, element: &Element) {
+fn handle_p(state: &mut State, element: &tl::HTMLTag) {
     state.add_text("\n");
     handle_elements(state, &element.children);
     // This is overkill if we have two adjacent p elements.  But otherwise we have to keep track of
@@ -129,34 +132,34 @@ fn handle_p(state: &mut State, element: &Element) {
 }
 
 #[instrument]
-fn handle_br(state: &mut State, element: &Element) {
+fn handle_br(state: &mut State, element: &tl::HTMLTag) {
     state.add_text("\n");
 }
 
 #[instrument]
-fn handle_b(state: &mut State, element: &Element) {
+fn handle_b(state: &mut State, element: &tl::HTMLTag) {
     handle_fontattr(state, element, "*");
 }
 
 #[instrument]
-fn handle_i(state: &mut State, element: &Element) {
+fn handle_i(state: &mut State, element: &tl::HTMLTag) {
     handle_fontattr(state, element, "_");
 }
 
 #[instrument]
-fn handle_code(state: &mut State, element: &Element) {
+fn handle_code(state: &mut State, element: &tl::HTMLTag) {
     handle_fontattr(state, element, "`");
 }
 
 #[instrument]
-fn handle_strike(state: &mut State, element: &Element) {
+fn handle_strike(state: &mut State, element: &tl::HTMLTag) {
     handle_fontattr(state, element, "~");
 }
 
 // These tags will only work if there's some whitespace surrounding them.  Since we can't count on
 // the HTML to have them, we have to add spaces regardless.
 #[instrument]
-fn handle_fontattr(state: &mut State, element: &Element, c: &str) {
+fn handle_fontattr(state: &mut State, element: &tl::HTMLTag, c: &str) {
     // The leading space should only be added if the buffer doesn't already end in a whitespace.
     // The pattern API which would make that simplest isn't stable yet, so we just check for the
     // most likely whitespace characters: space and newline.
@@ -174,14 +177,14 @@ fn handle_fontattr(state: &mut State, element: &Element, c: &str) {
 }
 
 #[instrument]
-fn handle_a(state: &mut State, element: &Element) {
+fn handle_a(state: &mut State, element: &tl::HTMLTag) {
     // Some of the URLs we get are super long (2265 in front of me); might have to investigate a
     // URL shortener.
     // https://learn.microsoft.com/en-us/shows/azure-friday/azurlshortener-an-open-source-budget-friendly-url-shortener
     // What should we do when the <a> content has markup in it?  get_all_text() grabs just the
     // text.  Slack doesn't let you do markup inside the link text, but we could conceivably
     // extract all markup that applied to the entire contents and put it outside.
-    let link_text = get_all_text(element);
+    let link_text = get_all_text(state, element);
     // Why are values in the attributes HashMap Option(String)?
     if let Some(Some(href)) = element.attributes.get("href") {
         state.add_text(&format!("<{href}|{link_text}>"));
@@ -191,14 +194,14 @@ fn handle_a(state: &mut State, element: &Element) {
 }
 
 #[instrument]
-fn handle_ul(state: &mut State, element: &Element) {
+fn handle_ul(state: &mut State, element: &tl::HTMLTag) {
     handle_elements(state, &element.children);
     state.ol_count = None;
     state.add_text("\n");
 }
 
 #[instrument]
-fn handle_li(state: &mut State, element: &Element) {
+fn handle_li(state: &mut State, element: &tl::HTMLTag) {
     let parent = state.element_chain.iter().rev().nth(1); // nth() is zero-based
 
     let marker = match parent {
