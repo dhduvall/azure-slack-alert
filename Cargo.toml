@@ -24,7 +24,6 @@ tracing-subscriber = { version = "0.3.15", features = ["json"] }
 uname = "0.1.1"
 slack-morphism = { version = "1.2.0", features = ["hyper"] }
 axum-macros = "0.2.3"
-html_parser = "0.6.3"
 anyhow = "1.0.64"
 html-escape = "0.2.11"
 mongodb = { version = "2.3.0", features = ["zlib-compression"] }
@@ -35,3 +34,5 @@ axum-core = "0.2.8"
 http = "0.2.8"
 indoc = "1.0.7"
 base64 = "0.13.0"
+scraper = "0.13.0"
+ego-tree = "0.6.2"
