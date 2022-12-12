@@ -313,35 +313,20 @@ mod tests {
 
     #[test]
     fn test_get_all_text() {
-        let html = r#"<strong>this is the text</strong>"#;
-        let frag = Html::parse_fragment(html);
-        let root = frag.tree.root();
-        assert_eq!(root.children().count(), 1);
-        let text = get_all_text(root.children().next().unwrap());
-        assert_eq!(text, "this is the text");
-
-        // Nested
-        let html = r#"<em><strong>this is the text</strong></em>"#;
-        let frag = Html::parse_fragment(html);
-        let root = frag.tree.root();
-        assert_eq!(root.children().count(), 1);
-        let text = get_all_text(root.children().next().unwrap());
-        assert_eq!(text, "this is the text");
-
-        // Nested twice
-        let html = r#"<em><strong><i>this is the text</i></strong></em>"#;
-        let frag = Html::parse_fragment(html);
-        let root = frag.tree.root();
-        assert_eq!(root.children().count(), 1);
-        let text = get_all_text(root.children().next().unwrap());
-        assert_eq!(text, "this is the text");
-
-        // Nested and mixed
-        let html = r#"<em><strong><i>this is</i></strong> <b>the text</b></em>"#;
-        let frag = Html::parse_fragment(html);
-        let root = frag.tree.root();
-        assert_eq!(root.children().count(), 1);
-        let text = get_all_text(root.children().next().unwrap());
-        assert_eq!(text, "this is the text");
+        for html in &[
+            "<strong>this is the text</strong>",
+            // Nested
+            "<em><strong>this is the text</strong></em>",
+            // Nested twice
+            "<em><strong><i>this is the text</i></strong></em>",
+            // Nested and mixed
+            "<em><strong><i>this is</i></strong> <b>the text</b></em>",
+        ] {
+            let frag = Html::parse_fragment(html);
+            let root = frag.tree.root();
+            assert_eq!(root.children().count(), 1);
+            let text = get_all_text(root.children().next().unwrap());
+            assert_eq!(text, "this is the text");
+        }
     }
 }
