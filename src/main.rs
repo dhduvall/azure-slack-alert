@@ -9,12 +9,14 @@ use axum::{
 use axum_macros::debug_handler;
 use azure_identity::{AzureCliCredential, DefaultAzureCredential, DefaultAzureCredentialEnum};
 use azure_security_keyvault::SecretClient;
+use datadog_logs::config::DataDogConfig;
 use mongodb::{options::ClientOptions, results::InsertOneResult, Client};
 use slack_morphism::prelude::*;
 use std::collections::HashMap;
 use std::env;
 use std::net::{Ipv4Addr, SocketAddr};
 use tracing::{debug, error, info, instrument, trace, warn};
+use tracing_datadog_logs::DataDogLayer;
 use uname::uname;
 
 pub mod alerts;
@@ -50,42 +52,35 @@ fn env_default(var: EnvDefaults) -> String {
 }
 
 fn init_logger() {
-    if atty::is(atty::Stream::Stdin) {
-        tracing_subscriber::fmt::init();
+    use tracing_subscriber::{filter::EnvFilter, prelude::*, Registry};
+
+    let subscriber = Registry::default();
+    let subscriber = subscriber.with(EnvFilter::from_default_env());
+
+    let stdout = if atty::is(atty::Stream::Stdin) {
+        // Adding pretty() makes each entry more readable, but lots of entries less so.
+        // Maybe make that configurable with an environment variable?
+        tracing_subscriber::fmt::layer().boxed()
     } else {
-        // This duplicates the code in tracing_subscriber::fmt::try_init().  See
-        // https://github.com/tokio-rs/tracing/issues/1329 and
-        // https://github.com/tokio-rs/tracing/issues/2217
-        use tracing_core::metadata::LevelFilter;
-        use tracing_subscriber::{fmt::Subscriber, util::SubscriberInitExt};
-        let builder = Subscriber::builder()
-            .with_max_level(LevelFilter::TRACE)
-            .json();
+        tracing_subscriber::fmt::layer().json().boxed()
+    };
+    let subscriber = subscriber.with(stdout);
 
-        let subscriber = builder.finish();
-        let subscriber = {
-            use std::str::FromStr;
-            use tracing_subscriber::{filter::Targets, layer::SubscriberExt};
-
-            let targets = match env::var("RUST_LOG") {
-                Ok(var) => Targets::from_str(&var)
-                    .map_err(|e| {
-                        eprintln!("Ignoring `RUST_LOG={:?}`: {}", var, e);
-                    })
-                    .unwrap_or_default(),
-                Err(env::VarError::NotPresent) => {
-                    Targets::new().with_default(Subscriber::DEFAULT_MAX_LEVEL)
-                }
-                Err(e) => {
-                    eprintln!("Ignoring `RUST_LOG`: {}", e);
-                    Targets::new().with_default(Subscriber::DEFAULT_MAX_LEVEL)
-                }
-            };
-            subscriber.with(targets)
+    // Only log to Datadog if we've configured an API key
+    let ddl = if let Ok(api_key) = env::var("DD_API_KEY") {
+        let ddconf = DataDogConfig {
+            apikey: api_key,
+            service: Some("azure-alert-to-slack".into()),
+            enable_self_log: true,
+            ..Default::default()
         };
+        Some(DataDogLayer::new(ddconf))
+    } else {
+        None
+    };
+    let subscriber = subscriber.with(ddl);
 
-        subscriber.init();
-    }
+    subscriber.init();
 }
 
 #[tokio::main]

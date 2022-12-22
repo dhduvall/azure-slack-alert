@@ -20,7 +20,7 @@ azure_security_keyvault = "0.4.0"
 # azure_identity = { version = "0.5.0", default-features = false, features = ["enable_reqwest_rustls"] }
 azure_identity = "0.5.0"
 tracing = "0.1.36"
-tracing-subscriber = { version = "0.3.15", features = ["json"] }
+tracing-subscriber = { version = "0.3.15", features = ["env-filter", "json"] }
 uname = "0.1.1"
 slack-morphism = { version = "1.2.0", features = ["hyper"] }
 axum-macros = "0.2.3"
@@ -36,3 +36,5 @@ indoc = "1.0.7"
 base64 = "0.13.0"
 scraper = "0.13.0"
 ego-tree = "0.6.2"
+tracing-datadog-logs = { path = "../tracing-datadog-logs" }
+datadog-logs = "0.2.1"
