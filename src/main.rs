@@ -29,6 +29,7 @@ enum EnvDefaults {
     FunctionsCustomHandlerPort,
     KeyVaultName,
     SlackAPIKeyName,
+    FunctionSlotName,
 }
 
 fn env_default(var: EnvDefaults) -> String {
@@ -42,6 +43,7 @@ fn env_default(var: EnvDefaults) -> String {
         EnvDefaults::FunctionsCustomHandlerPort => ("FUNCTIONS_CUSTOMHANDLER_PORT", "3000"),
         EnvDefaults::KeyVaultName => ("KEYVAULT_NAME", "coros-svc-health-alert"),
         EnvDefaults::SlackAPIKeyName => ("SLACK_API_KEY_NAME", "slack-bot-oauth-token"),
+        EnvDefaults::FunctionSlotName => ("WEBSITE_SLOT_NAME", "Production"),
     };
 
     if let Ok(value) = env::var(kv_default.0) {
@@ -66,11 +68,20 @@ fn init_logger() {
     };
     let subscriber = subscriber.with(stdout);
 
+    // If we're running in a non-production slot (assuming we can find the slot name), tack that
+    // onto the service name.
+    let mut service = "azure-alert-to-slack".to_string();
+    let slot = env_default(EnvDefaults::FunctionSlotName);
+    if slot != "Production" {
+        service.push('-');
+        service.push_str(slot.as_str());
+    };
+
     // Only log to Datadog if we've configured an API key
     let ddl = if let Ok(api_key) = env::var("DD_API_KEY") {
         let ddconf = DataDogConfig {
             apikey: api_key,
-            service: Some("azure-alert-to-slack".into()),
+            service: Some(service),
             enable_self_log: true,
             ..Default::default()
         };
